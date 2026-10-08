@@ -1,0 +1,30 @@
+{
+  "name": "dsh-fortress",
+  "version": "0.1.0",
+  "description": "A DSH plugin",
+  "private": true,
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown && node scripts/wrap-client-bundle.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "pnpm -r run clean",
+    "dev": "dsh web --patch cordis.yml",
+    "register": "node scripts/auto-register.js",
+    "register:win": "scripts\\auto-register.cmd",
+    "register:unix": "./scripts/auto-register.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "jsdom": "^30.0.1",
+    "tsdown": "^0.11.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}
