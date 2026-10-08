@@ -12,10 +12,14 @@
  *       GET /dsh-plugin-host-template-test  →  { "serverTime": 1730000000000 }
  *       （headless profile 没有 webServer 服务，这条路由不注册）
  *       每次工具调用在宿主 stdout 上多打一行 [dsh-fortress:guard] 记录。
+ *       卡 5 起 guard 还会拦下对受保护路径的写 / 改 / 删，只读操作一律放行。
  *
  * 详细：@deepseek-ai/* 只允许 `import type`（编译期擦除），运行时不引入宿主实现，
  *       宿主能力（tools / webServer / systemPrompt 等）统一由 DSH 在运行时注入。
  */
+
+import { realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 // 类型桩来源：根 tsconfig.json 的 paths "@deepseek-ai/*" -> "./types/deepseek-ai.d.ts"
 import type { Context } from '@deepseek-ai/cordis'
@@ -109,6 +113,139 @@ function isProtectedRemoval(command: string): boolean {
 }
 
 /**
+ * 受保护路径（卡 5 先硬编码，下张卡改成从配置读）。
+ *
+ * 保护的语义是「只读」：写、改、删、移动都拦，读取一律放行，所以
+ * read / grep / glob 这类工具完全不出现在下面的判断里。
+ */
+const PROTECTED_PATHS = ['/Users/liuzhaoyang/dsh-fortress-dev']
+
+/**
+ * 路径归一化：先 realpathSync（解析符号链接、把 /var 收敛成 /private/var），
+ * 失败就退回 path.resolve（路径不存在、权限不足时 realpathSync 会抛错）。
+ *
+ * 统一转小写，因为 APFS 默认大小写不敏感，/Users 和 /users 是同一个目录。
+ * 整个函数不抛错：任何异常都退化成 resolve 的结果，最坏情况只是匹配不上。
+ *
+ * @param raw 原始路径字符串
+ * @returns 小写的绝对路径
+ */
+function normalizePath(raw: string): string {
+  try {
+    return realpathSync(raw).toLowerCase()
+  } catch {
+    return resolve(raw).toLowerCase()
+  }
+}
+
+/**
+ * PROTECTED_PATHS 归一化后的前缀表，模块加载时算一次。
+ *
+ * 预先 realpath 是为了绕开 macOS 的 /var → /private/var 这类等价拼法：
+ * 配置里写的和命令里写的可能指向同一个目录，却不是同一个字符串。
+ * normalizePath() 自己不抛错，所以放在模块顶层是安全的。
+ */
+const PROTECTED_PATH_PREFIXES = PROTECTED_PATHS.map((path) => normalizePath(path))
+
+/**
+ * 判断一个已归一化的路径是否落在受保护前缀之内。
+ *
+ * 用「相等 或 前缀 + 斜杠」，而不是裸 startsWith：否则
+ * /Users/.../dsh-fortress-dev-2 这种兄弟目录会被误判成受保护。
+ *
+ * @param normalized normalizePath() 的输出
+ * @returns 命中受保护路径返回 true
+ */
+function matchesProtectedPrefix(normalized: string): boolean {
+  return PROTECTED_PATH_PREFIXES.some(
+    (prefix) => normalized === prefix || normalized.startsWith(prefix + '/'),
+  )
+}
+
+/**
+ * 原始路径字符串是否受保护（写 / 删判断的统一入口）。
+ *
+ * @param raw 来自工具参数的未知值，非字符串一律视为不命中
+ * @returns 命中受保护路径返回 true
+ */
+function isProtectedPath(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.length === 0) return false
+  return matchesProtectedPrefix(normalizePath(raw))
+}
+
+/** bash 里与写 / 删 / 移动有关的动词，卡 5 只认这三个 */
+const MUTATING_VERBS = ['rm', 'mv', 'cp']
+
+/**
+ * 取一个 token 的动词名：'/bin/rm' → 'rm'，带引号的 rm 也一样。
+ *
+ * @param token 命令切分出来的单个 token
+ * @returns 去掉引号与目录前缀后的名字
+ */
+function verbName(token: string): string {
+  const unquoted = token.replace(/^['"]|['"]$/g, '')
+  const parts = unquoted.split('/')
+  return parts[parts.length - 1]
+}
+
+/**
+ * 取一个 token 表示的操作数路径：顺带处理 --flag=value 这种写法。
+ *
+ * @param token 命令切分出来的单个 token
+ * @returns 去引号、去 --flag= 前缀后的字符串
+ */
+function operandPath(token: string): string {
+  const unquoted = token.replace(/^['"]|['"]$/g, '')
+  const eq = unquoted.indexOf('=')
+  return eq >= 0 ? unquoted.slice(eq + 1) : unquoted
+}
+
+/**
+ * bash 命令级判断（卡 5 简化版）：命令里是否在对受保护路径做写 / 删 / 移动。
+ *
+ * 依旧是字符串级判断、不做完整 shell 解析（tokenizer 是后面的卡），规则：
+ *   1. 先按 && || ; | 换行 切段逐段看，没出现 rm / mv / cp 的段直接跳过；
+ *   2. cp：只有「目标是受保护路径」才拦——cp 受保护路径 → 别处 是读取语义，
+ *      放行。目标取动词之后最后一个非选项操作数；
+ *   3. rm / mv：该段里任一操作数落在受保护路径内就拦——rm 是删除，mv 无论
+ *      朝哪个方向都会改动受保护那一侧。
+ *
+ * 只认绝对路径 token（以斜杠开头），相对路径的相对基准解析留给后面的卡。
+ *
+ * @param command bash 工具的原始命令字符串
+ * @returns 命中受保护路径的写 / 删返回 true
+ */
+function isProtectedPathModification(command: string): boolean {
+  const segments = command.split(/&&|\|\||[;|\n]/)
+
+  for (const segment of segments) {
+    const tokens = segment.split(/\s+/).filter((token) => token.length > 0)
+    const verbIndex = tokens.findIndex((token) => MUTATING_VERBS.includes(verbName(token)))
+    if (verbIndex === -1) continue
+
+    const operands = tokens.slice(verbIndex + 1)
+
+    if (verbName(tokens[verbIndex]) === 'cp') {
+      // 目标 = 最后一个非选项操作数；只看它，源是受保护路径属于读取语义。
+      for (let i = operands.length - 1; i >= 0; i -= 1) {
+        const candidate = operandPath(operands[i])
+        if (candidate.startsWith('-')) continue
+        if (candidate.startsWith('/') && isProtectedPath(candidate)) return true
+        break
+      }
+      continue
+    }
+
+    for (const token of operands) {
+      const candidate = operandPath(token)
+      if (candidate.startsWith('/') && isProtectedPath(candidate)) return true
+    }
+  }
+
+  return false
+}
+
+/**
  * 插件主体：注册宿主侧 HTTP 接口 + 注入 dsh-fortress 守则段 + 挂工具守卫。
  *
  * @param ctx Cordis 上下文（由 DSH 在运行时注入，本地仅用类型）
@@ -145,10 +282,12 @@ export function apply(ctx: Context): void {
     'dsh-fortress:rules section',
   )
 
-  // 工具守卫（卡 3 记录 + 卡 4 删除识别）：tools.guard() 注册的是同步守卫，
-  // 每次工具调用前都会收到 exec（Readonly<ToolExecution>）。卡 4 起对 bash 调用
-  // 做删除语义识别，命中受保护工具的删除命令时返回字符串阻止执行（宿主把返回的
-  // 字符串当作 block 原因）；未命中返回 undefined 放行。
+  // 工具守卫（卡 3 记录 + 卡 4 删除识别 + 卡 5 路径只读保护）：tools.guard()
+  // 注册的是同步守卫，每次工具调用前都会收到 exec（Readonly<ToolExecution>）。
+  // 卡 4 起对 bash 调用做删除语义识别；卡 5 起再补两条：bash 里对受保护路径的
+  // 写 / 删 / 移动，以及 write / edit / str_replace_editor 指向受保护路径的调用。
+  // 命中时返回字符串阻止执行（宿主把返回的字符串当作 block 原因）；未命中返回
+  // undefined 放行。read / grep / glob 等只读工具完全不参与判断。
   // 守卫体内刻意不抛错：即使 exec 结构不符合预期（字段缺失、甚至不是对象），
   // 也要走到 console.log 并原样放行，绝不能让一次异常打断工具调用链路。
   // guard() 返回的是撤销该守卫的 disposer，同样交给 ctx.effect() 托管，
@@ -158,15 +297,40 @@ export function apply(ctx: Context): void {
       ctx.tools.guard((exec) => {
         console.log('[dsh-fortress:guard]', exec?.name, exec?.arguments)
 
-        // 卡 4：只识别 bash 调用。可选链保证 exec / exec.arguments 缺失或不是
-        // 对象时 command 只是 undefined，判断逻辑照常走完，不会抛错。
+        // 卡 4 / 卡 5：只识别 bash 调用。可选链保证 exec / exec.arguments 缺失或
+        // 不是对象时 command 只是 undefined，判断逻辑照常走完，不会抛错。
         if (exec?.name === 'bash') {
           const command = exec?.arguments?.command
           // 检查前先打印原文，方便调试匹配为什么不生效。
           console.log('[dsh-fortress:guard] bash command:', command)
 
-          if (typeof command === 'string' && isProtectedRemoval(command)) {
-            return 'blocked: protected tool removal'
+          if (typeof command === 'string') {
+            // 卡 4：删除受保护工具（dsh plugin remove / pnpm remove 等）。
+            if (isProtectedRemoval(command)) {
+              return 'blocked: protected tool removal'
+            }
+
+            // 卡 5：对受保护路径的写 / 删 / 移动；cp 受保护路径 → 别处 属于读取，放行。
+            if (isProtectedPathModification(command)) {
+              return 'blocked: protected path modification'
+            }
+          }
+        }
+
+        // 卡 5：文件类工具的目标路径判断。只列写类工具，
+        // read / grep / glob 这些只读工具刻意不进来。
+        if (
+          exec?.name === 'write' ||
+          exec?.name === 'edit' ||
+          exec?.name === 'str_replace_editor'
+        ) {
+          const args = exec?.arguments
+          if (args !== null && typeof args === 'object') {
+            // 两套参数名都试：本仓用 path，Claude 风格的工具用 file_path。
+            const candidate = args.path ?? args.file_path
+            if (isProtectedPath(candidate)) {
+              return 'blocked: protected path modification'
+            }
           }
         }
 
