@@ -13,12 +13,13 @@
  *       （headless profile 没有 webServer 服务，这条路由不注册）
  *       每次工具调用在宿主 stdout 上多打一行 [dsh-fortress:guard] 记录。
  *       卡 5 起 guard 还会拦下对受保护路径的写 / 改 / 删，只读操作一律放行。
+ *       卡 6 起守则文本 / 受保护路径 / 删除规则都从 JSON 配置读，见 CONFIG.md。
  *
  * 详细：@deepseek-ai/* 只允许 `import type`（编译期擦除），运行时不引入宿主实现，
  *       宿主能力（tools / webServer / systemPrompt 等）统一由 DSH 在运行时注入。
  */
 
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 // 类型桩来源：根 tsconfig.json 的 paths "@deepseek-ai/*" -> "./types/deepseek-ai.d.ts"
@@ -41,13 +42,130 @@ const ROUTE_PATH = '/dsh-plugin-host-template-test'
 /** 守则段名字：全局唯一，注册与顺序查询都用它 */
 const RULES_SECTION = 'dsh-fortress:rules'
 
+/** 配置文件路径（卡 6）：它自己就在受保护路径内，AI 改不了，形成递归保护。 */
+const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
+
 /**
- * 守则文本（卡 2 先写静态字符串，后续卡再做可配置）。
+ * 配置结构（卡 6，对应 CONFIG_PATH 指向的 config.json）：
+ *
+ *   {
+ *     "rulesText": "守则文本字符串",
+ *     "protectedPaths": ["/path1", "/path2"],
+ *     "protectedRemovalPatterns": [
+ *       { "keywords": ["dsh plugin", "remove", "dsh-fortress"] }
+ *     ]
+ *   }
+ *
+ * 字段说明见项目根目录 CONFIG.md。
+ */
+interface FortressConfig {
+  /** 注入 systemPrompt 的守则文本 */
+  rulesText: string
+  /** 只读保护路径：写 / 改 / 删拦，读取放行 */
+  protectedPaths: string[]
+  /** 删除语义规则：一条规则的 keywords 全部出现在命令里即拦 */
+  protectedRemovalPatterns: Array<{ keywords: string[] }>
+}
+
+/**
+ * 内置默认配置：内容就是卡 5 之前的硬编码值。
+ *
+ * 没有 config.json、文件读不动、JSON 语法错、字段缺失或类型不对时都用它，
+ * 所以「没有配置文件」的行为与卡 5 完全一致。
+ */
+const DEFAULT_CONFIG: FortressConfig = {
+  rulesText: '[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。',
+  protectedPaths: ['/Users/liuzhaoyang/dsh-fortress-dev'],
+  protectedRemovalPatterns: [
+    { keywords: ['dsh plugin', 'remove', 'dsh-fortress'] },
+    { keywords: ['dsh plugin', 'remove', 'dsh-plugin-host-template'] },
+    { keywords: ['dsh plugin', 'remove', 'dsh-plugin-client-template'] },
+    { keywords: ['pnpm', 'remove', 'dsh-fortress'] },
+    { keywords: ['npm', 'uninstall', 'dsh-fortress'] },
+  ],
+}
+
+/**
+ * 非空字符串数组判断（配置校验用）。
+ *
+ * 空数组一律算无效：protectedPaths / protectedRemovalPatterns 写成空数组
+ * 等于关掉保护，更像误操作，所以退回默认值。
+ *
+ * @param raw 来自 JSON 的未知值
+ * @returns 是合规的非空字符串数组返回 true
+ */
+function isNonEmptyStringArray(raw: unknown): raw is string[] {
+  return (
+    Array.isArray(raw) &&
+    raw.length > 0 &&
+    raw.every((item) => typeof item === 'string' && item.length > 0)
+  )
+}
+
+/**
+ * 删除规则数组校验：每项必须是 { keywords: 非空字符串数组 }。
+ *
+ * @param raw 来自 JSON 的未知值
+ * @returns 合规时返回规则数组，否则 undefined（交给默认值）
+ */
+function parseRemovalPatterns(raw: unknown): Array<{ keywords: string[] }> | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+
+  const patterns: Array<{ keywords: string[] }> = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') return undefined
+    const keywords = (item as { keywords?: unknown }).keywords
+    if (!isNonEmptyStringArray(keywords)) return undefined
+    patterns.push({ keywords: [...keywords] })
+  }
+  return patterns
+}
+
+/**
+ * 读配置文件（卡 6，模块加载阶段执行一次，不放在 apply() 里）。
+ *
+ * 全程不抛错：文件不存在、读不动、JSON 语法错误、字段缺失或类型不对，
+ * 都退回 DEFAULT_CONFIG——插件必须能加载，配置出问题最多让某项回到默认值。
+ * 字段逐个校验、逐项回退：一个字段写坏了不影响其它字段。
+ *
+ * @returns 本次加载生效的配置
+ */
+function loadConfig(): FortressConfig {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+  } catch {
+    return DEFAULT_CONFIG
+  }
+
+  if (parsed === null || typeof parsed !== 'object') return DEFAULT_CONFIG
+  const raw = parsed as Record<string, unknown>
+
+  const rulesText =
+    typeof raw.rulesText === 'string' && raw.rulesText.length > 0
+      ? raw.rulesText
+      : DEFAULT_CONFIG.rulesText
+
+  return {
+    rulesText,
+    protectedPaths: isNonEmptyStringArray(raw.protectedPaths)
+      ? [...raw.protectedPaths]
+      : DEFAULT_CONFIG.protectedPaths,
+    protectedRemovalPatterns:
+      parseRemovalPatterns(raw.protectedRemovalPatterns) ?? DEFAULT_CONFIG.protectedRemovalPatterns,
+  }
+}
+
+/** 本次加载生效的配置（模块加载时算一次，改完配置要重启 DSH 才生效） */
+const CONFIG: FortressConfig = loadConfig()
+
+/**
+ * 守则文本（卡 6 起来自配置的 rulesText，缺省时用 DEFAULT_CONFIG.rulesText）。
  *
  * 段上设置 interpolate: false，正文里的 `{{…}}` 等字面花括号不会被当成
  * 提示词变量插值。
  */
-const RULES_TEXT = '[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。'
+const RULES_TEXT = CONFIG.rulesText
 
 /**
  * 顺序锚点：systemPrompt 中心顺序表里最靠后的一段（部署人格后缀）。
@@ -86,9 +204,9 @@ function resolveRulesOrder(ctx: Context): number {
  *
  * 这一版故意只做简单字符串匹配、不做完整 shell 解析（tokenizer 是后面的卡），
  * 所以像 `dsh plugin remove @scope/dsh-fortress` 这种变体认不出来，属于已知局限。
- * 关键词硬编码在这里是临时的，卡 6 改成从配置读。
- *
- * 命中规则逐条对应需求，命中任一即返回 true：
+ * 规则（卡 6 起）来自配置的 protectedRemovalPatterns：一条规则是一组
+ * { keywords: [...] }，命令「同时包含该规则的全部关键词」即命中；命中任一
+ * 规则就返回 true。默认规则（DEFAULT_CONFIG，等价于卡 4 的 5 条硬编码）：
  *   1. 'dsh plugin' + 'remove' + 'dsh-fortress'
  *   2. 'dsh plugin' + 'remove' + 'dsh-plugin-host-template'
  *   3. 'dsh plugin' + 'remove' + 'dsh-plugin-client-template'
@@ -99,26 +217,18 @@ function resolveRulesOrder(ctx: Context): number {
  * @returns 命中受保护删除返回 true
  */
 function isProtectedRemoval(command: string): boolean {
-  const has = (keyword: string): boolean => command.includes(keyword)
-
-  const dshPluginRemove = has('dsh plugin') && has('remove')
-
-  if (dshPluginRemove && has('dsh-fortress')) return true
-  if (dshPluginRemove && has('dsh-plugin-host-template')) return true
-  if (dshPluginRemove && has('dsh-plugin-client-template')) return true
-  if (has('pnpm') && has('remove') && has('dsh-fortress')) return true
-  if (has('npm') && has('uninstall') && has('dsh-fortress')) return true
-
-  return false
+  return CONFIG.protectedRemovalPatterns.some((pattern) =>
+    pattern.keywords.every((keyword) => command.includes(keyword)),
+  )
 }
 
 /**
- * 受保护路径（卡 5 先硬编码，下张卡改成从配置读）。
+ * 受保护路径（卡 6 起来自配置的 protectedPaths，缺省用 DEFAULT_CONFIG）。
  *
  * 保护的语义是「只读」：写、改、删、移动都拦，读取一律放行，所以
  * read / grep / glob 这类工具完全不出现在下面的判断里。
  */
-const PROTECTED_PATHS = ['/Users/liuzhaoyang/dsh-fortress-dev']
+const PROTECTED_PATHS = CONFIG.protectedPaths
 
 /**
  * 路径归一化：先 realpathSync（解析符号链接、把 /var 收敛成 /private/var），
