@@ -19,7 +19,8 @@
  *       宿主能力（tools / webServer / systemPrompt 等）统一由 DSH 在运行时注入。
  */
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync, watch } from 'node:fs'
+import type { FSWatcher } from 'node:fs'
 import { resolve } from 'node:path'
 
 // 类型桩来源：根 tsconfig.json 的 paths "@deepseek-ai/*" -> "./types/deepseek-ai.d.ts"
@@ -158,7 +159,44 @@ export function loadConfig(configPath: string = CONFIG_PATH): FortressConfig {
 }
 
 /** 本次加载生效的配置（模块加载时算一次，改完配置要重启 DSH 才生效） */
-const CONFIG: FortressConfig = loadConfig()
+let CONFIG: FortressConfig = loadConfig()
+
+/**
+ * 从磁盘重新读取配置文件并整体替换 CONFIG（卡 1 配置热重载）。
+ *
+ * - 读取失败 / 非法 JSON / 顶层不是对象：保留旧 CONFIG，返回 false（不抛错）
+ * - 成功：CONFIG 换成新配置，返回 true
+ *
+ * apply() 里的 fs.watch 与 e2e 测试都走这条路径。
+ *
+ * @param configPath 配置文件路径，默认 CONFIG_PATH
+ * @returns 是否成功重载
+ */
+export function reloadConfig(configPath: string = CONFIG_PATH): boolean {
+  try {
+    const raw = readFileSync(configPath, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object') {
+      console.log('[dsh-fortress:config] reload failed, keeping old config: not a JSON object')
+      return false
+    }
+    CONFIG = loadConfig(configPath)
+    return true
+  } catch (error) {
+    console.log('[dsh-fortress:config] reload failed, keeping old config', error)
+    return false
+  }
+}
+
+/** 只读返回当前 CONFIG 的浅拷贝（e2e 测试用）。 */
+export function __getConfigForTest(): FortressConfig {
+  return { ...CONFIG }
+}
+
+/** 用局部补丁替换当前 CONFIG（e2e 测试用，模拟配置变更）。 */
+export function __setConfigForTest(patch: Partial<FortressConfig>): void {
+  CONFIG = { ...CONFIG, ...patch }
+}
 
 /**
  * 守则文本（卡 6 起来自配置的 rulesText，缺省时用 DEFAULT_CONFIG.rulesText）。
@@ -166,7 +204,9 @@ const CONFIG: FortressConfig = loadConfig()
  * 段上设置 interpolate: false，正文里的 `{{…}}` 等字面花括号不会被当成
  * 提示词变量插值。
  */
-const RULES_TEXT = CONFIG.rulesText
+export function getRulesText(): string {
+  return CONFIG.rulesText
+}
 
 /**
  * 顺序锚点：systemPrompt 中心顺序表里最靠后的一段（部署人格后缀）。
@@ -230,7 +270,9 @@ export function isProtectedRemoval(command: string): boolean {
  * 保护的语义是「只读」：写、改、删、移动都拦，读取一律放行，所以
  * read / grep / glob 这类工具完全不出现在下面的判断里。
  */
-const PROTECTED_PATHS = CONFIG.protectedPaths
+export function getProtectedPaths(): string[] {
+  return CONFIG.protectedPaths
+}
 
 /**
  * 路径归一化：先 realpathSync（解析符号链接、把 /var 收敛成 /private/var），
@@ -257,7 +299,25 @@ function normalizePath(raw: string): string {
  * 配置里写的和命令里写的可能指向同一个目录，却不是同一个字符串。
  * normalizePath() 自己不抛错，所以放在模块顶层是安全的。
  */
-const PROTECTED_PATH_PREFIXES = PROTECTED_PATHS.map((path) => normalizePath(path))
+let protectedPrefixCache: { key: string; prefixes: string[] } | undefined
+
+/**
+ * 当前受保护路径前缀，每次调用重新归一化（带缓存）。
+ *
+ * normalizePath() 内含 realpathSync 系统调用；用 CONFIG.protectedPaths 的
+ * JSON 字符串做 key，配置没变就复用上次结果。
+ *
+ * @returns 归一化后的路径前缀列表
+ */
+export function getProtectedPathPrefixes(): string[] {
+  const key = JSON.stringify(CONFIG.protectedPaths)
+  if (protectedPrefixCache !== undefined && protectedPrefixCache.key === key) {
+    return protectedPrefixCache.prefixes
+  }
+  const prefixes = CONFIG.protectedPaths.map((path) => normalizePath(path))
+  protectedPrefixCache = { key, prefixes }
+  return prefixes
+}
 
 /**
  * 判断一个已归一化的路径是否落在受保护前缀之内。
@@ -268,8 +328,14 @@ const PROTECTED_PATH_PREFIXES = PROTECTED_PATHS.map((path) => normalizePath(path
  * @param normalized normalizePath() 的输出
  * @returns 命中受保护路径返回 true
  */
-function matchesProtectedPrefix(normalized: string): boolean {
-  return PROTECTED_PATH_PREFIXES.some(
+function matchesProtectedPrefix(
+  normalized: string,
+  pathsOverride?: string[],
+): boolean {
+  const prefixes = pathsOverride
+    ? pathsOverride.map((path) => normalizePath(path))
+    : getProtectedPathPrefixes()
+  return prefixes.some(
     (prefix) => normalized === prefix || normalized.startsWith(prefix + '/'),
   )
 }
@@ -278,12 +344,13 @@ function matchesProtectedPrefix(normalized: string): boolean {
  * 原始路径字符串是否受保护（写 / 删判断的统一入口）。
  *
  * @param raw 来自工具参数的未知值，非字符串一律视为不命中
+ * @param pathsOverride 可选的受保护路径清单（测试注入用）；省略时用 CONFIG.protectedPaths
  * @returns 命中受保护路径返回 true
  */
 // 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
-export function isProtectedPath(raw: unknown): boolean {
+export function isProtectedPath(raw: unknown, pathsOverride?: string[]): boolean {
   if (typeof raw !== 'string' || raw.length === 0) return false
-  return matchesProtectedPrefix(normalizePath(raw))
+  return matchesProtectedPrefix(normalizePath(raw), pathsOverride)
 }
 
 /** bash 里与写 / 删 / 移动有关的动词，卡 5 只认这三个 */
@@ -326,10 +393,14 @@ function operandPath(token: string): string {
  * 只认绝对路径 token（以斜杠开头），相对路径的相对基准解析留给后面的卡。
  *
  * @param command bash 工具的原始命令字符串
+ * @param pathsOverride 可选的受保护路径清单（测试注入用）；省略时用 CONFIG.protectedPaths
  * @returns 命中受保护路径的写 / 删返回 true
  */
 // 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
-export function isProtectedPathModification(command: string): boolean {
+export function isProtectedPathModification(
+  command: string,
+  pathsOverride?: string[],
+): boolean {
   const segments = command.split(/&&|\|\||[;|\n]/)
 
   for (const segment of segments) {
@@ -344,7 +415,7 @@ export function isProtectedPathModification(command: string): boolean {
       for (let i = operands.length - 1; i >= 0; i -= 1) {
         const candidate = operandPath(operands[i])
         if (candidate.startsWith('-')) continue
-        if (candidate.startsWith('/') && isProtectedPath(candidate)) return true
+        if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
         break
       }
       continue
@@ -352,7 +423,7 @@ export function isProtectedPathModification(command: string): boolean {
 
     for (const token of operands) {
       const candidate = operandPath(token)
-      if (candidate.startsWith('/') && isProtectedPath(candidate)) return true
+      if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
     }
   }
 
@@ -390,7 +461,10 @@ export function apply(ctx: Context): void {
       ctx.systemPrompt.section({
         name: RULES_SECTION,
         order: resolveRulesOrder(ctx),
-        text: RULES_TEXT,
+        // 卡 1：用 getter 而非快照值，systemPrompt 每次组装时重新读取 CONFIG
+        get text() {
+          return getRulesText()
+        },
         interpolate: false,
       }),
     'dsh-fortress:rules section',
@@ -451,6 +525,44 @@ export function apply(ctx: Context): void {
         return undefined
       }),
     'dsh-fortress:tools guard',
+  )
+
+  // 卡 1 配置热重载：config.json 改动后不重启 DSH 也能生效。
+  // watcher 交给 ctx.effect() 托管，插件卸载 / 重载时自动关闭。
+  // 启动失败（例如配置文件不存在）只打日志，降级为「重启后生效」，不抛错。
+  ctx.effect(
+    () => {
+      let lastMtime = 0
+      let watcher: FSWatcher | undefined
+      try {
+        watcher = watch(CONFIG_PATH, (eventType: string) => {
+          if (eventType !== 'change') return
+          try {
+            const stat = statSync(CONFIG_PATH)
+            const mtime = stat.mtimeMs
+            // mtime 去抖：重复事件 / 事件风暴只重载一次
+            if (mtime === lastMtime) return
+            lastMtime = mtime
+            if (reloadConfig()) {
+              console.log('[dsh-fortress:config] reloaded')
+            }
+          } catch (error) {
+            console.log('[dsh-fortress:config] reload failed, keeping old config', error)
+          }
+        })
+        // 不把宿主进程钉在事件循环上；DSH 自身有其它 handle 维持生命周期
+        watcher.unref()
+      } catch (error) {
+        console.log(
+          '[dsh-fortress:config] watcher unavailable, config changes need a restart',
+          error,
+        )
+      }
+      return () => {
+        if (watcher !== undefined) watcher.close()
+      }
+    },
+    'dsh-fortress:config watcher',
   )
 
   return undefined

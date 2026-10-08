@@ -12,9 +12,9 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 // ---------------------------------------------------------------------------
 // 迷你测试框架
@@ -57,8 +57,14 @@ interface PluginModule {
   DEFAULT_CONFIG: FortressConfig
   loadConfig: (configPath?: string) => FortressConfig
   isProtectedRemoval: (command: string) => boolean
-  isProtectedPath: (raw: unknown) => boolean
-  isProtectedPathModification: (command: string) => boolean
+  isProtectedPath: (raw: unknown, pathsOverride?: string[]) => boolean
+  isProtectedPathModification: (command: string, pathsOverride?: string[]) => boolean
+  reloadConfig: (configPath?: string) => boolean
+  getRulesText: () => string
+  getProtectedPaths: () => string[]
+  getProtectedPathPrefixes: () => string[]
+  __getConfigForTest: () => FortressConfig
+  __setConfigForTest: (patch: Partial<FortressConfig>) => void
 }
 
 type GuardExec = { name?: unknown; arguments?: unknown }
@@ -81,6 +87,8 @@ const DEV_DIR = '/Users/liuzhaoyang/dsh-fortress-dev'
 let guard: Guard | undefined
 let sectionText: string | undefined
 let sectionOrder: number | undefined
+// apply() 里 ctx.effect() 返回的 disposer，跑完统一释放（含配置热重载 watcher）
+const effects: Array<() => void> = []
 
 function fakeContext(): unknown {
   return {
@@ -88,7 +96,8 @@ function fakeContext(): unknown {
     get: () => undefined,
     // effect 立即执行回调：guard / systemPrompt section 都是在这里注册的
     effect: (callback: () => unknown) => {
-      callback()
+      const disposer = callback()
+      if (typeof disposer === 'function') effects.push(disposer as () => void)
       return () => {}
     },
     tools: {
@@ -317,8 +326,173 @@ for (const item of malformedCases) {
 }
 
 // ===========================================================================
+// 24-31 保护任意路径（protectedPaths 覆盖）
+// ===========================================================================
+
+group('24-31 保护任意路径（protectedPaths 覆盖）')
+
+// 这 8 条验证「config.protectedPaths 里放任意路径都生效」，通过 isProtectedPath /
+// isProtectedPathModification 的可选参数注入不同清单，不动真实 config.json
+// （守卫 tools.guard 用模块加载时的 CONFIG，其接线由第 16-19 条覆盖）。
+// 先造出真实文件 / 目录：这样 normalizePath 的 realpathSync 分支也被走到；
+// 第 31 条反过来专门覆盖「路径不存在 -> realpathSync 失败回退 resolve」那条分支。
+
+const WILD_FILE = '/tmp/xxx.txt'
+const WILD_DIR = '/tmp/xxx-dir'
+const WILD_DIR2 = '/tmp/xxx-dir2'
+const WILD_DIR2_FILE = '/tmp/xxx-dir2/a.txt'
+const WILD_CASE_DIR = '/tmp/XXX-dir'
+const WILD_MULTI_A = '/tmp/a'
+const WILD_MULTI_B = '/tmp/b'
+const WILD_MULTI_B_FILE = '/tmp/b/x.txt'
+const WILD_MISSING_DIR = '/tmp/zzz'
+
+const WILD_DIRS = [WILD_DIR, WILD_DIR2, WILD_CASE_DIR, WILD_MULTI_A, WILD_MULTI_B]
+
+function prepareWildcards(): void {
+  for (const dir of WILD_DIRS) rmSync(dir, { recursive: true, force: true })
+  rmSync(WILD_FILE, { force: true })
+  writeFileSync(WILD_FILE, 'dsh-fortress 测试夹具\n', 'utf8')
+  mkdirSync(join(WILD_DIR, 'sub'), { recursive: true })
+  writeFileSync(join(WILD_DIR, 'a.txt'), '', 'utf8')
+  writeFileSync(join(WILD_DIR, 'sub', 'b.txt'), '', 'utf8')
+  mkdirSync(WILD_DIR2, { recursive: true })
+  writeFileSync(WILD_DIR2_FILE, '', 'utf8')
+  mkdirSync(WILD_CASE_DIR, { recursive: true })
+  mkdirSync(WILD_MULTI_B, { recursive: true })
+  writeFileSync(WILD_MULTI_B_FILE, '', 'utf8')
+}
+
+function removeWildcards(): void {
+  rmSync(WILD_FILE, { force: true })
+  for (const dir of WILD_DIRS) rmSync(dir, { recursive: true, force: true })
+}
+
+prepareWildcards()
+
+try {
+  check('24', 'paths 含 /tmp/xxx.txt，write /tmp/xxx.txt -> 拦', () => {
+    assert.equal(mod.isProtectedPath(WILD_FILE, [WILD_FILE]), true)
+    assert.equal(mod.isProtectedPathModification(`rm ${WILD_FILE}`, [WILD_FILE]), true)
+  })
+
+  check('25', 'paths 不含 /tmp/yyy.txt，write /tmp/yyy.txt -> 放行', () => {
+    assert.equal(mod.isProtectedPath('/tmp/yyy.txt', [WILD_FILE, WILD_DIR]), false)
+    assert.equal(
+      mod.isProtectedPathModification('rm /tmp/yyy.txt', [WILD_FILE, WILD_DIR]),
+      false,
+    )
+  })
+
+  check('26', 'paths 含 /tmp/xxx-dir，write /tmp/xxx-dir/a.txt -> 拦', () => {
+    assert.equal(mod.isProtectedPath(join(WILD_DIR, 'a.txt'), [WILD_DIR]), true)
+  })
+
+  check('27', 'paths 含 /tmp/xxx-dir，write /tmp/xxx-dir/sub/b.txt -> 拦（嵌套）', () => {
+    assert.equal(mod.isProtectedPath(join(WILD_DIR, 'sub', 'b.txt'), [WILD_DIR]), true)
+  })
+
+  check('28', 'paths 含 /tmp/xxx-dir，write /tmp/xxx-dir2/a.txt -> 放行（兄弟目录不误伤）', () => {
+    assert.equal(mod.isProtectedPath(WILD_DIR2_FILE, [WILD_DIR]), false)
+  })
+
+  check('29', 'paths 含 /tmp/XXX-dir，write /tmp/xxx-dir/a.txt -> 拦（大小写不敏感）', () => {
+    assert.equal(mod.isProtectedPath(join(WILD_DIR, 'a.txt'), [WILD_CASE_DIR]), true)
+  })
+
+  check('30', 'paths 含 /tmp/a 和 /tmp/b，write /tmp/b/x.txt -> 拦（多路径并存）', () => {
+    assert.equal(mod.isProtectedPath(WILD_MULTI_B_FILE, [WILD_MULTI_A, WILD_MULTI_B]), true)
+    assert.equal(mod.isProtectedPath(WILD_MULTI_A, [WILD_MULTI_A, WILD_MULTI_B]), true)
+  })
+
+  check('31', 'paths 含 /tmp/zzz，write /tmp/zzz/nonexistent.txt -> 拦（回退 resolve）', () => {
+    assert.equal(existsSync(WILD_MISSING_DIR), false, `${WILD_MISSING_DIR} 不存在，本用例才成立`)
+    assert.equal(
+      mod.isProtectedPath(join(WILD_MISSING_DIR, 'nonexistent.txt'), [WILD_MISSING_DIR]),
+      true,
+    )
+  })
+} finally {
+  removeWildcards()
+}
+
+// ============================================================
+// 32-36 卡 1：配置热重载（getter + reloadConfig）
+// ============================================================
+
+group('32-36 配置热重载')
+
+/** 与 index.ts normalizePath() 对齐：realpath 优先，失败回退 resolve，统一小写。 */
+function normalizePathLike(raw: string): string {
+  try {
+    return realpathSync(raw).toLowerCase()
+  } catch {
+    return resolve(raw).toLowerCase()
+  }
+}
+
+check('32', 'getRulesText() 返回当前 CONFIG.rulesText', () => {
+  const current = mod.__getConfigForTest()
+  assert.equal(mod.getRulesText(), current.rulesText)
+  assert.ok(mod.getRulesText().length > 0, 'rulesText 不应为空')
+})
+
+check('33', 'CONFIG.rulesText 变更后 getRulesText() 返回新值', () => {
+  const original = mod.__getConfigForTest().rulesText
+  try {
+    mod.__setConfigForTest({ rulesText: 'HOT-RELOAD-MARKER' })
+    assert.equal(mod.getRulesText(), 'HOT-RELOAD-MARKER')
+  } finally {
+    mod.__setConfigForTest({ rulesText: original })
+  }
+  assert.equal(mod.getRulesText(), original, 'rulesText 应已恢复')
+})
+
+check('34', 'getProtectedPaths() 返回当前 CONFIG.protectedPaths', () => {
+  const current = mod.__getConfigForTest()
+  assert.deepEqual(mod.getProtectedPaths(), current.protectedPaths)
+  assert.ok(mod.getProtectedPaths().length > 0, 'protectedPaths 不应为空')
+})
+
+check('35', '坏 JSON 不改变 CONFIG（重载失败保留旧值）', () => {
+  const before = mod.__getConfigForTest()
+  const broken = tmpConfig('hot-reload-broken.json', '{ "rulesText": ')
+  const originalLog = console.log
+  let ok = true
+  try {
+    console.log = () => {}
+    ok = mod.reloadConfig(broken)
+  } finally {
+    console.log = originalLog
+  }
+  assert.equal(ok, false, 'reloadConfig(坏 JSON) 应返回 false')
+  assert.equal(mod.getRulesText(), before.rulesText, 'rulesText 应保留旧值')
+  assert.deepEqual(mod.__getConfigForTest().protectedPaths, before.protectedPaths)
+})
+
+check('36', 'getProtectedPathPrefixes() 归一化后能匹配 /Users/liuzhaoyang/dsh-fortress-dev', () => {
+  const original = mod.__getConfigForTest().protectedPaths
+  try {
+    mod.__setConfigForTest({ protectedPaths: [DEV_DIR] })
+    const prefixes = mod.getProtectedPathPrefixes()
+    const expected = normalizePathLike(DEV_DIR)
+    assert.ok(
+      prefixes.includes(expected),
+      `prefixes ${JSON.stringify(prefixes)} 应包含 ${expected}`,
+    )
+    assert.equal(mod.isProtectedPath(join(DEV_DIR, 'config.json')), true)
+  } finally {
+    mod.__setConfigForTest({ protectedPaths: original })
+    mod.getProtectedPathPrefixes()
+  }
+})
+
+// ===========================================================================
 // 收尾
 // ===========================================================================
+
+// 释放 apply() 注册的 effect（包含配置热重载 watcher）
+for (const dispose of effects) dispose()
 
 rmSync(tmpDir, { recursive: true, force: true })
 
