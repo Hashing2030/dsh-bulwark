@@ -43,7 +43,7 @@ const ROUTE_PATH = '/dsh-plugin-host-template-test'
 const RULES_SECTION = 'dsh-fortress:rules'
 
 /** 配置文件路径（卡 6）：它自己就在受保护路径内，AI 改不了，形成递归保护。 */
-const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
+export const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
 
 /**
  * 配置结构（卡 6，对应 CONFIG_PATH 指向的 config.json）：
@@ -58,7 +58,7 @@ const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
  *
  * 字段说明见项目根目录 CONFIG.md。
  */
-interface FortressConfig {
+export interface FortressConfig {
   /** 注入 systemPrompt 的守则文本 */
   rulesText: string
   /** 只读保护路径：写 / 改 / 删拦，读取放行 */
@@ -73,7 +73,7 @@ interface FortressConfig {
  * 没有 config.json、文件读不动、JSON 语法错、字段缺失或类型不对时都用它，
  * 所以「没有配置文件」的行为与卡 5 完全一致。
  */
-const DEFAULT_CONFIG: FortressConfig = {
+export const DEFAULT_CONFIG: FortressConfig = {
   rulesText: '[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。',
   protectedPaths: ['/Users/liuzhaoyang/dsh-fortress-dev'],
   protectedRemovalPatterns: [
@@ -130,10 +130,11 @@ function parseRemovalPatterns(raw: unknown): Array<{ keywords: string[] }> | und
  *
  * @returns 本次加载生效的配置
  */
-function loadConfig(): FortressConfig {
+/** 读取配置；configPath 仅供测试注入，默认读 CONFIG_PATH */
+export function loadConfig(configPath: string = CONFIG_PATH): FortressConfig {
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+    parsed = JSON.parse(readFileSync(configPath, 'utf8'))
   } catch {
     return DEFAULT_CONFIG
   }
@@ -216,7 +217,8 @@ function resolveRulesOrder(ctx: Context): number {
  * @param command bash 工具的原始命令字符串
  * @returns 命中受保护删除返回 true
  */
-function isProtectedRemoval(command: string): boolean {
+// 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
+export function isProtectedRemoval(command: string): boolean {
   return CONFIG.protectedRemovalPatterns.some((pattern) =>
     pattern.keywords.every((keyword) => command.includes(keyword)),
   )
@@ -278,7 +280,8 @@ function matchesProtectedPrefix(normalized: string): boolean {
  * @param raw 来自工具参数的未知值，非字符串一律视为不命中
  * @returns 命中受保护路径返回 true
  */
-function isProtectedPath(raw: unknown): boolean {
+// 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
+export function isProtectedPath(raw: unknown): boolean {
   if (typeof raw !== 'string' || raw.length === 0) return false
   return matchesProtectedPrefix(normalizePath(raw))
 }
@@ -325,7 +328,8 @@ function operandPath(token: string): string {
  * @param command bash 工具的原始命令字符串
  * @returns 命中受保护路径的写 / 删返回 true
  */
-function isProtectedPathModification(command: string): boolean {
+// 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
+export function isProtectedPathModification(command: string): boolean {
   const segments = command.split(/&&|\|\||[;|\n]/)
 
   for (const segment of segments) {

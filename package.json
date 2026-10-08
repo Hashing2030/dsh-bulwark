@@ -13,6 +13,7 @@
     "build": "tsdown && node scripts/wrap-client-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "node --experimental-strip-types tests/e2e.test.ts",
     "test:coverage": "vitest run --coverage",
     "clean": "pnpm -r run clean",
     "dev": "dsh web --patch cordis.yml",
