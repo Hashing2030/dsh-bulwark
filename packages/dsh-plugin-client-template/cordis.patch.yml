@@ -1,0 +1,5 @@
+# 这个子包不是独立的 loader 层。它是被根包 dsh-fortress 的 cordis.yml
+# 按包名引用的模块。这个空 patch 只是为了让 DSH 的 bundle 校验通过，
+# 从而能被 dsh plugin add / App 安装界面接受，进而 link 进 profile
+# 的 node_modules。这里不 insert 任何条目，loader 层完全由根包控制。
+[]
