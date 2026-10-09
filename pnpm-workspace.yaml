@@ -3,3 +3,4 @@ packages:
 allowBuilds:
   esbuild: true
 verifyDepsBeforeRun: false
+autoInstallPeers: false

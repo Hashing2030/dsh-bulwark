@@ -1,3 +1,8 @@
+# 这个文件是包根的 bundle 清单（DSH 生态惯例名），内容必须与 cordis.yml 保持一致。
+# 注意：DSH 实际加载的 bundle patch 由 package.json 的 dsh.bundle.patch 指定，
+# 当前指向 ./cordis.yml；本文件的存在是为满足 dsh-plugin-lint 的 S3-plugin-manifest
+# 规则与打包惯例（tarball 内可见 cordis.patch.yml）。改名/增删 loader 条目时两个文件都要改。
+#
 # 本地开发补丁（dsh web --patch cordis.yml）
 #
 # 注意：loader 条目必须按包名解析（host 半区走包 main，浏览器半区由

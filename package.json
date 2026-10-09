@@ -1,9 +1,32 @@
 {
-  "name": "dsh-fortress",
+  "name": "dsh-bulwark",
   "version": "0.1.0",
-  "description": "A DSH plugin",
-  "private": true,
+  "description": "DSH bundle 插件：向 DeepSeek Harness 的 systemPrompt 注入守则段，并在工具调用层拦截受保护路径的修改与受保护插件的卸载。",
   "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "guard",
+    "protection"
+  ],
+  "main": "./packages/dsh-plugin-host-template/dist/index.js",
+  "exports": {
+    ".": "./packages/dsh-plugin-host-template/dist/index.js",
+    "./client": "./packages/dsh-plugin-client-template/dist/index.cjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.yml",
+    "cordis.patch.yml",
+    "packages/dsh-plugin-host-template/dist",
+    "packages/dsh-plugin-host-template/cordis.patch.yml",
+    "packages/dsh-plugin-client-template/dist",
+    "packages/dsh-plugin-client-template/cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.yml"
@@ -11,6 +34,7 @@
   },
   "scripts": {
     "build": "tsdown && node scripts/wrap-client-bundle.mjs",
+    "prepare": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "node --experimental-strip-types tests/e2e.test.ts",
@@ -20,6 +44,10 @@
     "register": "node scripts/auto-register.js",
     "register:win": "scripts\\auto-register.cmd",
     "register:unix": "./scripts/auto-register.sh"
+  },
+  "dependencies": {
+    "dsh-plugin-host-template": "workspace:^0.1.0",
+    "dsh-plugin-client-template": "workspace:^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

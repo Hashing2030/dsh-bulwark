@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# protect.sh —— dsh-fortress 配置管理脚本（v2：脚本路线，不提供 GUI）
+# protect.sh —— dsh-bulwark 配置管理脚本（v2：脚本路线，不提供 GUI）
 #
-# 只做一件事：安全地读写 dsh-fortress 的 config.json
+# 只做一件事：安全地读写 dsh-bulwark 的 config.json
 #   - add / remove / list  维护 protectedPaths
 #   - rules / set-rules    读写 rulesText
 #   - show                 打印完整配置
@@ -31,7 +31,7 @@ die() {
 
 usage() {
   cat <<'EOF'
-protect.sh —— dsh-fortress 配置管理脚本（v2 脚本路线，无 GUI）
+protect.sh —— dsh-bulwark 配置管理脚本（v2 脚本路线，无 GUI）
 
 用法:
   protect.sh <子命令> [参数]
@@ -52,7 +52,7 @@ protect.sh —— dsh-fortress 配置管理脚本（v2 脚本路线，无 GUI）
 示例:
   ./scripts/protect.sh add /tmp/foo
   ./scripts/protect.sh remove /tmp/foo
-  ./scripts/protect.sh set-rules "[dsh-fortress 守则] 新的守则内容"
+  ./scripts/protect.sh set-rules "[dsh-bulwark 守则] 新的守则内容"
   ./scripts/protect.sh test "rm -rf /Users/liuzhaoyang/dsh-fortress-dev/foo"
 EOF
 }

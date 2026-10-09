@@ -11,7 +11,7 @@
  * 举例：web profile 下 DSH 启动后请求
  *       GET /dsh-plugin-host-template-test  →  { "serverTime": 1730000000000 }
  *       （headless profile 没有 webServer 服务，这条路由不注册）
- *       每次工具调用在宿主 stdout 上多打一行 [dsh-fortress:guard] 记录。
+ *       每次工具调用在宿主 stdout 上多打一行 [dsh-bulwark:guard] 记录。
  *       卡 5 起 guard 还会拦下对受保护路径的写 / 改 / 删，只读操作一律放行。
  *       卡 6 起守则文本 / 受保护路径 / 删除规则都从 JSON 配置读，见 CONFIG.md。
  *
@@ -44,7 +44,7 @@ export const inject = ['systemPrompt', 'tools']
 const ROUTE_PATH = '/dsh-plugin-host-template-test'
 
 /** 守则段名字：全局唯一，注册与顺序查询都用它 */
-const RULES_SECTION = 'dsh-fortress:rules'
+const RULES_SECTION = 'dsh-bulwark:rules'
 
 /** 配置文件路径（卡 6）：它自己就在受保护路径内，AI 改不了，形成递归保护。 */
 export const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
@@ -56,7 +56,7 @@ export const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
  *     "rulesText": "守则文本字符串",
  *     "protectedPaths": ["/path1", "/path2"],
  *     "protectedRemovalPatterns": [
- *       { "keywords": ["dsh plugin", "remove", "dsh-fortress"] }
+ *       { "keywords": ["dsh plugin", "remove", "dsh-bulwark"] }
  *     ]
  *   }
  *
@@ -78,14 +78,14 @@ export interface FortressConfig {
  * 所以「没有配置文件」的行为与卡 5 完全一致。
  */
 export const DEFAULT_CONFIG: FortressConfig = {
-  rulesText: '[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。',
+  rulesText: '[dsh-bulwark 守则] 部分工具和路径受保护，不要尝试绕过。',
   protectedPaths: ['/Users/liuzhaoyang/dsh-fortress-dev'],
   protectedRemovalPatterns: [
-    { keywords: ['dsh plugin', 'remove', 'dsh-fortress'] },
+    { keywords: ['dsh plugin', 'remove', 'dsh-bulwark'] },
     { keywords: ['dsh plugin', 'remove', 'dsh-plugin-host-template'] },
     { keywords: ['dsh plugin', 'remove', 'dsh-plugin-client-template'] },
-    { keywords: ['pnpm', 'remove', 'dsh-fortress'] },
-    { keywords: ['npm', 'uninstall', 'dsh-fortress'] },
+    { keywords: ['pnpm', 'remove', 'dsh-bulwark'] },
+    { keywords: ['npm', 'uninstall', 'dsh-bulwark'] },
   ],
 }
 
@@ -180,13 +180,13 @@ export function reloadConfig(configPath: string = CONFIG_PATH): boolean {
     const raw = readFileSync(configPath, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object') {
-      console.log('[dsh-fortress:config] reload failed, keeping old config: not a JSON object')
+      console.log('[dsh-bulwark:config] reload failed, keeping old config: not a JSON object')
       return false
     }
     CONFIG = loadConfig(configPath)
     return true
   } catch (error) {
-    console.log('[dsh-fortress:config] reload failed, keeping old config', error)
+    console.log('[dsh-bulwark:config] reload failed, keeping old config', error)
     return false
   }
 }
@@ -225,7 +225,7 @@ const ORDER_ANCHOR = 'DEPLOYMENT_PERSONA_SUFFIX'
  * undefined，而 section() 对非有限 order 会抛 TypeError，直接透传会让插件
  * 加载失败。因此分两级：
  *
- *   1. 先要 'dsh-fortress:rules' 自己的位置——名字一旦被中心表登记即自动生效；
+ *   1. 先要 'dsh-bulwark:rules' 自己的位置——名字一旦被中心表登记即自动生效；
  *   2. 当前它属于外部名字、中心表里没有，于是退回锚点 DEPLOYMENT_PERSONA_SUFFIX
  *      （SECTION_ORDERS 的最后一段，由 DSH 自己注册），守则排在宿主说明之后。
  *
@@ -238,7 +238,7 @@ function resolveRulesOrder(ctx: Context): number {
 
   const anchor = ctx.systemPrompt.getSectionOrder(ORDER_ANCHOR)
   if (anchor === undefined) {
-    throw new Error(`[dsh-fortress] systemPrompt 中心顺序表里缺少锚点 ${ORDER_ANCHOR}`)
+    throw new Error(`[dsh-bulwark] systemPrompt 中心顺序表里缺少锚点 ${ORDER_ANCHOR}`)
   }
   return anchor
 }
@@ -398,9 +398,9 @@ function collectSegments(command: string, depth: number): string[][] {
  * 卡 3：单个 token 是否匹配关键词的一个片段。
  *
  * 匹配刻意收紧到「整个 token 相等」或「以 / 分隔的末段相等」：
- *   - 'dsh-fortress' 命中 token 'dsh-fortress' 与 '@scope/dsh-fortress'；
+ *   - 'dsh-bulwark' 命中 token 'dsh-bulwark' 与 '@scope/dsh-bulwark'；
  *   - 关键词若只出现在引号包住的整段里（token 内含空格，比如
- *     `"pnpm remove dsh-fortress"`），不算命中——引号内是数据不是命令。
+ *     `"pnpm remove dsh-bulwark"`），不算命中——引号内是数据不是命令。
  *
  * @param token splitCommand 切出来的单个 token
  * @param part 关键词按空白拆出来的片段
@@ -442,11 +442,11 @@ function tokensHaveKeyword(tokens: string[], keyword: string): boolean {
  * 词法切分 / 包装器解包 / bash -c 递归，再在 token 层面匹配。规则（卡 6 起）来自配置的
  * protectedRemovalPatterns：一条规则是一组 { keywords: [...] }，命令「同时命中该规则的
  * 全部关键词」即命中；命中任一规则就返回 true。默认规则（DEFAULT_CONFIG）：
- *   1. 'dsh plugin' + 'remove' + 'dsh-fortress'
+ *   1. 'dsh plugin' + 'remove' + 'dsh-bulwark'
  *   2. 'dsh plugin' + 'remove' + 'dsh-plugin-host-template'
  *   3. 'dsh plugin' + 'remove' + 'dsh-plugin-client-template'
- *   4. 'pnpm' + 'remove' + 'dsh-fortress'
- *   5. 'npm' + 'uninstall' + 'dsh-fortress'
+ *   4. 'pnpm' + 'remove' + 'dsh-bulwark'
+ *   5. 'npm' + 'uninstall' + 'dsh-bulwark'
  *
  * @param command bash 工具的原始命令字符串
  * @returns 命中受保护删除返回 true
@@ -769,7 +769,7 @@ export function isProtectedPathModification(
   // 相对路径判断整条跳过（绝对路径判断照常），并打一条日志说明。
   let cwd = resolveInitialCwd(initialCwd)
   if (cwd === undefined) {
-    console.log('[dsh-fortress:guard] cwd unavailable, relative path checks skipped')
+    console.log('[dsh-bulwark:guard] cwd unavailable, relative path checks skipped')
   }
 
   for (const tokens of segments) {
@@ -847,7 +847,7 @@ export function isProtectedPathModification(
 }
 
 /**
- * 插件主体：注册宿主侧 HTTP 接口 + 注入 dsh-fortress 守则段 + 挂工具守卫。
+ * 插件主体：注册宿主侧 HTTP 接口 + 注入 dsh-bulwark 守则段 + 挂工具守卫。
  *
  * @param ctx Cordis 上下文（由 DSH 在运行时注入，本地仅用类型）
  */
@@ -883,7 +883,7 @@ export function apply(ctx: Context): void {
         },
         interpolate: false,
       }),
-    'dsh-fortress:rules section',
+    'dsh-bulwark:rules section',
   )
 
   // 工具守卫（卡 3 记录 + 卡 4 删除识别 + 卡 5 路径只读保护）：tools.guard()
@@ -899,14 +899,14 @@ export function apply(ctx: Context): void {
   ctx.effect(
     () =>
       ctx.tools.guard((exec) => {
-        console.log('[dsh-fortress:guard]', exec?.name, exec?.arguments)
+        console.log('[dsh-bulwark:guard]', exec?.name, exec?.arguments)
 
         // 卡 4 / 卡 5：只识别 bash 调用。可选链保证 exec / exec.arguments 缺失或
         // 不是对象时 command 只是 undefined，判断逻辑照常走完，不会抛错。
         if (exec?.name === 'bash') {
           const command = exec?.arguments?.command
           // 检查前先打印原文，方便调试匹配为什么不生效。
-          console.log('[dsh-fortress:guard] bash command:', command)
+          console.log('[dsh-bulwark:guard] bash command:', command)
 
           if (typeof command === 'string') {
             // 卡 4：删除受保护工具（dsh plugin remove / pnpm remove 等）。
@@ -949,7 +949,7 @@ export function apply(ctx: Context): void {
 
         return undefined
       }),
-    'dsh-fortress:tools guard',
+    'dsh-bulwark:tools guard',
   )
 
   // 卡 1 配置热重载：config.json 改动后不重启 DSH 也能生效。
@@ -969,17 +969,17 @@ export function apply(ctx: Context): void {
             if (mtime === lastMtime) return
             lastMtime = mtime
             if (reloadConfig()) {
-              console.log('[dsh-fortress:config] reloaded')
+              console.log('[dsh-bulwark:config] reloaded')
             }
           } catch (error) {
-            console.log('[dsh-fortress:config] reload failed, keeping old config', error)
+            console.log('[dsh-bulwark:config] reload failed, keeping old config', error)
           }
         })
         // 不把宿主进程钉在事件循环上；DSH 自身有其它 handle 维持生命周期
         watcher.unref()
       } catch (error) {
         console.log(
-          '[dsh-fortress:config] watcher unavailable, config changes need a restart',
+          '[dsh-bulwark:config] watcher unavailable, config changes need a restart',
           error,
         )
       }
@@ -987,7 +987,7 @@ export function apply(ctx: Context): void {
         if (watcher !== undefined) watcher.close()
       }
     },
-    'dsh-fortress:config watcher',
+    'dsh-bulwark:config watcher',
   )
 
   return undefined

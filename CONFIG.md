@@ -1,4 +1,4 @@
-# dsh-fortress 配置说明（卡 6：配置持久化 JSON 版）
+# dsh-bulwark 配置说明（卡 6：配置持久化 JSON 版）
 
 ## 1. 配置文件路径
 
@@ -20,8 +20,8 @@
   "rulesText": "守则文本字符串",
   "protectedPaths": ["/path1", "/path2"],
   "protectedRemovalPatterns": [
-    { "keywords": ["dsh plugin", "remove", "dsh-fortress"] },
-    { "keywords": ["pnpm", "remove", "dsh-fortress"] }
+    { "keywords": ["dsh plugin", "remove", "dsh-bulwark"] },
+    { "keywords": ["pnpm", "remove", "dsh-bulwark"] }
   ]
 }
 ```
@@ -30,7 +30,7 @@
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `rulesText` | 非空 string | 否 | `[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。` | 注入 `systemPrompt` 的守则文本，段名 `dsh-fortress:rules`，`interpolate: false` |
+| `rulesText` | 非空 string | 否 | `[dsh-bulwark 守则] 部分工具和路径受保护，不要尝试绕过。` | 注入 `systemPrompt` 的守则文本，段名 `dsh-bulwark:rules`，`interpolate: false` |
 | `protectedPaths` | 非空 string[] | 否 | `["/Users/liuzhaoyang/dsh-fortress-dev"]` | 只读保护路径：写 / 改 / 删 / 移动都拦，读取（read / grep / glob / cat）放行 |
 | `protectedRemovalPatterns` | 非空 `{keywords: string[]}[]` | 否 | 见下方 | 删除语义规则：命令**同时包含某条规则的全部 keywords** 即命中，命中任一规则即拦 |
 
@@ -38,11 +38,11 @@
 
 ```json
 [
-  { "keywords": ["dsh plugin", "remove", "dsh-fortress"] },
+  { "keywords": ["dsh plugin", "remove", "dsh-bulwark"] },
   { "keywords": ["dsh plugin", "remove", "dsh-plugin-host-template"] },
   { "keywords": ["dsh plugin", "remove", "dsh-plugin-client-template"] },
-  { "keywords": ["pnpm", "remove", "dsh-fortress"] },
-  { "keywords": ["npm", "uninstall", "dsh-fortress"] }
+  { "keywords": ["pnpm", "remove", "dsh-bulwark"] },
+  { "keywords": ["npm", "uninstall", "dsh-bulwark"] }
 ]
 ```
 
@@ -76,6 +76,6 @@
 
 - 只认绝对路径 token；相对路径不做基准解析。
 - bash 重定向 `>` / `>>`、`python -c 'open(...)'` 之类非 rm / mv / cp 的写语义不拦。
-- 删除规则仍是关键词匹配，认不出 `dsh plugin remove @scope/dsh-fortress` 这类变体。
+- 删除规则仍是关键词匹配，认不出 `dsh plugin remove @scope/dsh-bulwark` 这类变体。
 - 父目录是指向保护区的符号链接、末级路径又不存在时，`realpathSync` 失败会漏判。
 - 配置只在进程启动时读一次，没有热重载。

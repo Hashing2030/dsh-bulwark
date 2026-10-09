@@ -1,4 +1,4 @@
-# dsh-fortress 测试说明（卡 8）
+# dsh-bulwark 测试说明（卡 8）
 
 卡 1-7 的验证都是一次性脚本，跑完即弃。本文件配套 `tests/e2e.test.ts`，把这些验证固化成可重复运行的回归测试。
 
@@ -40,12 +40,18 @@ pnpm test:e2e
 
 | 编号 | 输入 | 期望 |
 | --- | --- | --- |
-| 5 | `dsh plugin --profile web remove dsh-fortress` | 拦，文案 `blocked: protected tool removal` |
+| 5 | `dsh plugin --profile web remove dsh-bulwark` | 拦，文案 `blocked: protected tool removal` |
 | 6 | `dsh plugin --profile web list` | 放行 |
-| 7 | `pnpm remove dsh-fortress` | 拦 |
-| 8 | `npm uninstall dsh-fortress` | 拦 |
-| 9 | `pnpm install dsh-fortress` | 放行（缺 remove 关键词） |
+| 7 | `pnpm remove dsh-bulwark` | 拦 |
+| 8 | `npm uninstall dsh-bulwark` | 拦 |
+| 9 | `pnpm install dsh-bulwark` | 放行（缺 remove 关键词） |
 | 10 | 空字符串 | 放行（不抛错） |
+
+> 命名说明（卡 8 改名后）：这几条的命令字符串在 `tests/e2e.test.ts` 里**保持旧包名
+> `dsh-fortress` 不变**（硬约束：不动断言期望值），因为它们靠本机
+> `~/dsh-fortress-dev/config.json` 里未改动的 `protectedRemovalPatterns` 生效。
+> 上表按项目新名书写；把新名写进 `protectedRemovalPatterns` 之后，同样会按预期拦截
+> （见 MIGRATION.md 第 4 节）。
 
 ### 2.3 路径保护 · bash 命令级（11-15）
 
@@ -108,7 +114,7 @@ pnpm build
 **① 只验插件真的叠进了 headless 启动栈（不调用模型，最快）**
 
 ```bash
-dsh --profile headless --patch cordis.yml --dump-config | grep -n -B2 -A2 dsh-fortress
+dsh --profile headless --patch cordis.yml --dump-config | grep -n -B2 -A2 dsh-bulwark
 ```
 
 期望：能看到 `# == …/dsh-fortress/cordis.yml` 这一段，以及两条带 `DSH_FORTRESS_DISABLE` 的 `disabled: !!js …` 表达式。（这条已实测，退出码 0。）
@@ -116,10 +122,10 @@ dsh --profile headless --patch cordis.yml --dump-config | grep -n -B2 -A2 dsh-fo
 **② 应被拦：删除插件**
 
 ```bash
-dsh --profile headless --patch cordis.yml "用 bash 工具原样执行这条命令：dsh plugin --profile web remove dsh-fortress。无论结果是成功还是失败都如实回报，不要换别的手段绕过。"
+dsh --profile headless --patch cordis.yml "用 bash 工具原样执行这条命令：dsh plugin --profile web remove dsh-bulwark。无论结果是成功还是失败都如实回报，不要换别的手段绕过。"
 ```
 
-期望：模型回报被拦（`blocked: protected tool removal`），stderr 里能看到 `[dsh-fortress:guard] bash command: …` 日志；插件仍然装着（`dsh plugin --profile web list` 里还在）。
+期望：模型回报被拦（`blocked: protected tool removal`），stderr 里能看到 `[dsh-bulwark:guard] bash command: …` 日志；插件仍然装着（`dsh plugin --profile web list` 里还在）。
 
 **③ 应被拦：写受保护目录**
 

@@ -1,6 +1,6 @@
 # protect.sh 使用说明
 
-`scripts/protect.sh` 是 dsh-fortress 的 CLI 配置管理工具。
+`scripts/protect.sh` 是 dsh-bulwark 的 CLI 配置管理工具。
 
 **为什么存在**：v2 决定不做 GUI。卡 6 探测过 DSH 的 settings API，它只暴露
 `ctx.settings.configure/describe/update` 这类服务端表单能力，没有给第三方插件留
@@ -74,7 +74,7 @@ $ ./scripts/protect.sh list
 
 ```console
 $ ./scripts/protect.sh rules
-[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。
+[dsh-bulwark 守则] 部分工具和路径受保护，不要尝试绕过。
 ```
 
 ### 1.5 set-rules
@@ -83,11 +83,11 @@ $ ./scripts/protect.sh rules
 因为插件把空 `rulesText` 视为无效并回退默认值。
 
 ```console
-$ ./scripts/protect.sh set-rules "[dsh-fortress 守则] 新的守则内容"
+$ ./scripts/protect.sh set-rules "[dsh-bulwark 守则] 新的守则内容"
 rules updated
 
 $ ./scripts/protect.sh rules
-[dsh-fortress 守则] 新的守则内容
+[dsh-bulwark 守则] 新的守则内容
 ```
 
 ### 1.6 show
@@ -97,7 +97,7 @@ $ ./scripts/protect.sh rules
 ```console
 $ ./scripts/protect.sh show
 {
-  "rulesText": "[dsh-fortress 守则] 部分工具和路径受保护，不要尝试绕过。",
+  "rulesText": "[dsh-bulwark 守则] 部分工具和路径受保护，不要尝试绕过。",
   "protectedPaths": [
     "/Users/liuzhaoyang/dsh-fortress-dev"
   ],
@@ -106,7 +106,7 @@ $ ./scripts/protect.sh show
       "keywords": [
         "dsh plugin",
         "remove",
-        "dsh-fortress"
+        "dsh-bulwark"
       ]
     }
   ]
@@ -127,7 +127,7 @@ reason: 命令的写 / 删 / 移动目标落在 protectedPaths 内
 $ ./scripts/protect.sh test "ls /Users/liuzhaoyang/dsh-fortress-dev"
 ALLOWED
 
-$ ./scripts/protect.sh test "pnpm remove dsh-fortress"
+$ ./scripts/protect.sh test "pnpm remove dsh-bulwark"
 BLOCKED
 reason: 命中受保护删除规则 protectedRemovalPatterns
 ```
@@ -135,11 +135,16 @@ reason: 命中受保护删除规则 protectedRemovalPatterns
 `test` 用当前 config.json 里的 `protectedPaths` 作为判断输入；如果该文件读不到或
 字段非法，就退回插件自己的默认配置。
 
+> 注意：删除规则的关键词来自插件读取的 config.json（`~/dsh-fortress-dev/config.json`）。
+> 改名后本机的 config.json 里仍是旧关键词 `dsh-fortress`，所以 `pnpm remove dsh-bulwark`
+> 在本机会输出 `ALLOWED`；只有把新名写进 `protectedRemovalPatterns` 后才会像上面那样 `BLOCKED`
+> （见 MIGRATION.md 第 4 节）。
+
 ### 1.8 help
 
 ```console
 $ ./scripts/protect.sh --help
-protect.sh —— dsh-fortress 配置管理脚本（v2 脚本路线，无 GUI）
+protect.sh —— dsh-bulwark 配置管理脚本（v2 脚本路线，无 GUI）
 ...（子命令、环境变量、示例列表）
 ```
 
@@ -148,7 +153,7 @@ protect.sh —— dsh-fortress 配置管理脚本（v2 脚本路线，无 GUI）
 ## 2. 修改后如何生效
 
 **DSH 正在运行时**：卡 1 已实现配置热重载——插件用 `fs.watch` 盯着 config.json，
-文件改动后会重新读取并整体替换内存里的配置（日志打 `[dsh-fortress:config] reloaded`）。
+文件改动后会重新读取并整体替换内存里的配置（日志打 `[dsh-bulwark:config] reloaded`）。
 脚本采用「临时文件 + rename 覆盖」的写法则更容易被 watch 捕捉到，正常情况下几秒内
 自动生效，**不需要重启 DSH**。
 
@@ -157,7 +162,7 @@ protect.sh —— dsh-fortress 配置管理脚本（v2 脚本路线，无 GUI）
 
 **万一热重载没生效**（例如文件系统事件丢失、watch 不可用）：重启 DSH 一定生效；
 插件自身也会在 watcher 不可用时打一行
-`[dsh-fortress:config] watcher unavailable, config changes need a restart`。
+`[dsh-bulwark:config] watcher unavailable, config changes need a restart`。
 
 ---
 

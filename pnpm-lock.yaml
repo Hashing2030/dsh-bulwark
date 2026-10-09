@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      dsh-plugin-client-template:
+        specifier: workspace:^0.1.0
+        version: link:packages/dsh-plugin-client-template
+      dsh-plugin-host-template:
+        specifier: workspace:^0.1.0
+        version: link:packages/dsh-plugin-host-template
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

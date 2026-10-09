@@ -1,6 +1,6 @@
 # dsh-plugin-host-template
 
-dsh-fortress 的宿主端（Node.js）插件包。
+dsh-bulwark 的宿主端（Node.js）插件包。
 
 ## 入口
 

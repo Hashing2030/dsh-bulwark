@@ -1,6 +1,6 @@
 # dsh-plugin-client-template
 
-dsh-fortress 的客户端插件包（双半区）。
+dsh-bulwark 的客户端插件包（双半区）。
 
 ## 两个半区
 
