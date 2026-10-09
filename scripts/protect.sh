@@ -21,8 +21,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PLUGIN_ENTRY="${REPO_ROOT}/packages/dsh-plugin-host-template/src/index.ts"
 
+# DSH 主目录（卡 7）：DSH 启动时会设置 DSH_HOME；没设时退回 ~/.dsh
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 # 默认配置文件；FORTRESS_CONFIG 可覆盖
-CONFIG="${FORTRESS_CONFIG:-${HOME}/dsh-fortress-dev/config.json}"
+CONFIG="${FORTRESS_CONFIG:-$DSH_HOME/dsh-bulwark/config.json}"
 
 die() {
   printf 'protect.sh: %s\n' "$*" >&2
@@ -47,13 +49,14 @@ protect.sh —— dsh-bulwark 配置管理脚本（v2 脚本路线，无 GUI）
   help, --help      显示本帮助
 
 环境变量:
-  FORTRESS_CONFIG   配置文件路径，默认 ~/dsh-fortress-dev/config.json
+  DSH_HOME          DSH 主目录，默认 ~/.dsh
+  FORTRESS_CONFIG   配置文件路径，默认 $DSH_HOME/dsh-bulwark/config.json
 
 示例:
   ./scripts/protect.sh add /tmp/foo
   ./scripts/protect.sh remove /tmp/foo
   ./scripts/protect.sh set-rules "[dsh-bulwark 守则] 新的守则内容"
-  ./scripts/protect.sh test "rm -rf /Users/liuzhaoyang/dsh-fortress-dev/foo"
+  ./scripts/protect.sh test "rm -rf /path/to/protected/foo"
 EOF
 }
 

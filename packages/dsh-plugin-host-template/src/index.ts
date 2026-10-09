@@ -21,7 +21,8 @@
 
 import { existsSync, readFileSync, realpathSync, statSync, watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 // 卡 3：shell 词法切分（纯函数、零依赖），用来替代脆弱的字符串 includes / 手写 split
 import { splitCommand } from './shell-tokenizer.ts'
@@ -46,8 +47,16 @@ const ROUTE_PATH = '/dsh-plugin-host-template-test'
 /** 守则段名字：全局唯一，注册与顺序查询都用它 */
 const RULES_SECTION = 'dsh-bulwark:rules'
 
-/** 配置文件路径（卡 6）：它自己就在受保护路径内，AI 改不了，形成递归保护。 */
-export const CONFIG_PATH = '/Users/liuzhaoyang/dsh-fortress-dev/config.json'
+/**
+ * DSH 主目录（卡 7）：DSH 启动时会设置 DSH_HOME；没设时退回 ~/.dsh。
+ */
+const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+
+/**
+ * 配置文件路径（卡 6）：位于 <DSH_HOME>/dsh-bulwark/ 下，不再硬编码作者个人路径。
+ * 该路径在受保护路径内时形成递归保护，AI 改不了。
+ */
+export const CONFIG_PATH = join(DSH_HOME, 'dsh-bulwark', 'config.json')
 
 /**
  * 配置结构（卡 6，对应 CONFIG_PATH 指向的 config.json）：
@@ -72,14 +81,17 @@ export interface FortressConfig {
 }
 
 /**
- * 内置默认配置：内容就是卡 5 之前的硬编码值。
+ * 内置默认配置：内容就是卡 5 之前的硬编码值（protectedPaths 除外）。
  *
  * 没有 config.json、文件读不动、JSON 语法错、字段缺失或类型不对时都用它，
  * 所以「没有配置文件」的行为与卡 5 完全一致。
+ *
+ * 卡 7：protectedPaths 默认为空数组——插件无从得知用户想保护什么，
+ *       用户装完后用 `scripts/protect.sh add <path>` 添加自己的路径。
  */
 export const DEFAULT_CONFIG: FortressConfig = {
   rulesText: '[dsh-bulwark 守则] 部分工具和路径受保护，不要尝试绕过。',
-  protectedPaths: ['/Users/liuzhaoyang/dsh-fortress-dev'],
+  protectedPaths: [],
   protectedRemovalPatterns: [
     { keywords: ['dsh plugin', 'remove', 'dsh-bulwark'] },
     { keywords: ['dsh plugin', 'remove', 'dsh-plugin-host-template'] },

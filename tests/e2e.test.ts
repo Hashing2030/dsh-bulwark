@@ -7,6 +7,9 @@
  *   - 不依赖 DSH 运行时：用一个假 ctx 调 apply() 拿到真实的 tools.guard 回调，
  *     再用真实的 exec 形状（{ name, arguments }）喂给它。
  *   - 零第三方依赖：只用 node:assert / node:fs / node:path，纯 Node 环境跑。
+ *   - 卡 7：测试依赖一个固定的受保护路径（TEST_PROTECTED）作为夹具，不代表插件
+ *     默认行为——DEFAULT_CONFIG.protectedPaths 现在是空数组。需要受保护路径的用例
+ *     一律显式传 TEST_PROTECTED，或经 __setConfigForTest 注入给真实 guard。
  *
  * 运行：node --experimental-strip-types tests/e2e.test.ts
  */
@@ -80,6 +83,26 @@ assert.equal(mod.name, 'dsh-plugin-host-template', '模块应导出插件名')
 
 const DEV_DIR = '/Users/liuzhaoyang/dsh-fortress-dev'
 
+/**
+ * 卡 7 测试夹具：需要受保护路径的用例显式传入它（真实 guard 半区用
+ * __setConfigForTest 注入），测试因此不再依赖插件默认的 protectedPaths
+ * ——那个默认值现在是空数组。
+ */
+const TEST_PROTECTED = [DEV_DIR]
+
+/**
+ * 卡 7 测试夹具：删除语义用例（5-10 / 45）用的是 dsh-fortress 时代的工具名，
+ * 这些关键词规则只属于夹具，不是插件默认行为——DEFAULT_CONFIG 里的规则已按
+ * 新名字 dsh-bulwark 书写。
+ */
+const TEST_REMOVAL_PATTERNS = [
+  { keywords: ['dsh plugin', 'remove', 'dsh-fortress'] },
+  { keywords: ['dsh plugin', 'remove', 'dsh-plugin-host-template'] },
+  { keywords: ['dsh plugin', 'remove', 'dsh-plugin-client-template'] },
+  { keywords: ['pnpm', 'remove', 'dsh-fortress'] },
+  { keywords: ['npm', 'uninstall', 'dsh-fortress'] },
+]
+
 // ---------------------------------------------------------------------------
 // 用假 ctx 跑真实 apply()，抓出真实的 guard 回调
 // ---------------------------------------------------------------------------
@@ -119,6 +142,13 @@ function fakeContext(): unknown {
 }
 
 mod.apply(fakeContext())
+
+// 卡 7：把夹具（受保护路径 + 旧名删除规则）注入模块内部 CONFIG，让「真实 guard」
+// 半区（5-10 / 11-15 / 16-19 / 37-71）与直接函数调用半区看到同一份夹具配置。
+mod.__setConfigForTest({
+  protectedPaths: TEST_PROTECTED,
+  protectedRemovalPatterns: TEST_REMOVAL_PATTERNS,
+})
 
 const liveGuard: Guard = guard ?? (() => {
   throw new Error('apply() 没有注册 tools.guard 回调（假 ctx 形状可能过时了）')
@@ -243,7 +273,7 @@ const bashPathCases: Array<{ id: string; command: string; blocked: boolean }> = 
 for (const item of bashPathCases) {
   check(item.id, `${JSON.stringify(item.command)} -> ${item.blocked ? '拦' : '放行'}`, () => {
     assert.equal(
-      mod.isProtectedPathModification(item.command),
+      mod.isProtectedPathModification(item.command, TEST_PROTECTED),
       item.blocked,
       `isProtectedPathModification 期望 ${item.blocked}`,
     )
@@ -297,10 +327,10 @@ for (const item of fileToolCases) {
     const result = askGuard(item.exec)
     if (item.blocked) {
       assert.equal(result, 'blocked: protected path modification')
-      assert.equal(mod.isProtectedPath(item.path), EXPECTED_PATH_PROTECTED[item.id])
+      assert.equal(mod.isProtectedPath(item.path, TEST_PROTECTED), EXPECTED_PATH_PROTECTED[item.id])
     } else {
       assert.equal(result, undefined, `guard 应放行，实际返回 ${JSON.stringify(result)}`)
-      assert.equal(mod.isProtectedPath(item.path), EXPECTED_PATH_PROTECTED[item.id])
+      assert.equal(mod.isProtectedPath(item.path, TEST_PROTECTED), EXPECTED_PATH_PROTECTED[item.id])
     }
   })
 }
@@ -772,6 +802,6 @@ console.log(`\n${failures.length === 0 ? '✅ 全部通过' : '❌ 有失败'}�
 if (failures.length > 0) {
   console.log('\n失败明细：')
   for (const failure of failures) console.log(`  - ${failure}`)
-  console.log(`\n提示：第 5-19 条依赖 ${mod.CONFIG_PATH} 里的受保护路径/规则；配置被改过就先恢复默认（见 TESTING.md）。`)
+  console.log(`\n提示：需要受保护路径的用例依赖测试夹具 TEST_PROTECTED（${DEV_DIR}，必须真实存在）；插件默认配置路径为 ${mod.CONFIG_PATH}。`)
   process.exitCode = 1
 }
