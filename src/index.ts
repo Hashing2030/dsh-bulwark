@@ -19,10 +19,10 @@
  *       宿主能力（tools / webServer / systemPrompt 等）统一由 DSH 在运行时注入。
  */
 
-import { existsSync, readFileSync, realpathSync, statSync, watch } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 // 卡 3：shell 词法切分（纯函数、零依赖），用来替代脆弱的字符串 includes / 手写 split
 import { splitCommand } from './shell-tokenizer.ts'
@@ -198,7 +198,10 @@ export function reloadConfig(configPath: string = CONFIG_PATH): boolean {
     CONFIG = loadConfig(configPath)
     return true
   } catch (error) {
-    console.log('[dsh-bulwark:config] reload failed, keeping old config', error)
+    console.log(
+      '[dsh-bulwark:config] reload failed, keeping old config:',
+      error instanceof Error ? error.message : String(error),
+    )
     return false
   }
 }
@@ -971,6 +974,28 @@ export function apply(ctx: Context): void {
     () => {
       let lastMtime = 0
       let watcher: FSWatcher | undefined
+
+      // 卡 9：首次启动时配置目录可能还不存在，fs.watch 会抛 ENOENT。
+      // 先补建目录，把「装完第一次跑 dsh 就吐一坨堆栈」消掉。
+      const configDir = dirname(CONFIG_PATH)
+      try {
+        mkdirSync(configDir, { recursive: true })
+      } catch (error) {
+        console.log(
+          '[dsh-bulwark:config] cannot create config dir',
+          configDir,
+          (error as Error).message,
+        )
+        return () => {}
+      }
+
+      // 卡 9：先读一次 mtime 作为初始值，避免启动后第一次写入因 lastMtime=0 被误判。
+      try {
+        lastMtime = statSync(CONFIG_PATH).mtimeMs
+      } catch {
+        // 配置文件可能尚不存在，保持 0 即可
+      }
+
       try {
         watcher = watch(CONFIG_PATH, (eventType: string) => {
           if (eventType !== 'change') return
@@ -984,15 +1009,18 @@ export function apply(ctx: Context): void {
               console.log('[dsh-bulwark:config] reloaded')
             }
           } catch (error) {
-            console.log('[dsh-bulwark:config] reload failed, keeping old config', error)
+            console.log(
+              '[dsh-bulwark:config] reload failed, keeping old config:',
+              error instanceof Error ? error.message : String(error),
+            )
           }
         })
         // 不把宿主进程钉在事件循环上；DSH 自身有其它 handle 维持生命周期
         watcher.unref()
       } catch (error) {
         console.log(
-          '[dsh-bulwark:config] watcher unavailable, config changes need a restart',
-          error,
+          '[dsh-bulwark:config] watcher unavailable, config changes need a restart:',
+          error instanceof Error ? error.message : String(error),
         )
       }
       return () => {

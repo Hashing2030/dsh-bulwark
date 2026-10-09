@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, realpathSync, statSync, watch } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, watch } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 //#region src/shell-tokenizer.ts
 /**
@@ -261,7 +261,7 @@ function reloadConfig(configPath = CONFIG_PATH) {
 		CONFIG = loadConfig(configPath);
 		return true;
 	} catch (error) {
-		console.log("[dsh-bulwark:config] reload failed, keeping old config", error);
+		console.log("[dsh-bulwark:config] reload failed, keeping old config:", error instanceof Error ? error.message : String(error));
 		return false;
 	}
 }
@@ -890,6 +890,16 @@ function apply(ctx) {
 	ctx.effect(() => {
 		let lastMtime = 0;
 		let watcher;
+		const configDir = dirname(CONFIG_PATH);
+		try {
+			mkdirSync(configDir, { recursive: true });
+		} catch (error) {
+			console.log("[dsh-bulwark:config] cannot create config dir", configDir, error.message);
+			return () => {};
+		}
+		try {
+			lastMtime = statSync(CONFIG_PATH).mtimeMs;
+		} catch {}
 		try {
 			watcher = watch(CONFIG_PATH, (eventType) => {
 				if (eventType !== "change") return;
@@ -900,12 +910,12 @@ function apply(ctx) {
 					lastMtime = mtime;
 					if (reloadConfig()) console.log("[dsh-bulwark:config] reloaded");
 				} catch (error) {
-					console.log("[dsh-bulwark:config] reload failed, keeping old config", error);
+					console.log("[dsh-bulwark:config] reload failed, keeping old config:", error instanceof Error ? error.message : String(error));
 				}
 			});
 			watcher.unref();
 		} catch (error) {
-			console.log("[dsh-bulwark:config] watcher unavailable, config changes need a restart", error);
+			console.log("[dsh-bulwark:config] watcher unavailable, config changes need a restart:", error instanceof Error ? error.message : String(error));
 		}
 		return () => {
 			if (watcher !== void 0) watcher.close();
