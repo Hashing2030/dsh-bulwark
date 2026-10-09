@@ -565,6 +565,112 @@ check('45', `sudo dsh plugin --profile web remove dsh-fortress -> 拦（包装�
 })
 
 // ===========================================================================
+// 47-61 卡 4：写入动词扩展（sudo 选项 / 重定向 / dd / truncate / tee / 内联脚本）
+// ===========================================================================
+
+group('47-61 卡 4：写入动词扩展')
+
+// 每条都走 isProtectedPathModification + 真实 guard 双路验证，与 37-44 的检查方式一致
+const writingVerbCases: Array<{ id: string; command: string; blocked: boolean; label: string }> = [
+  {
+    id: '47',
+    command: `sudo -u root rm -rf ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'sudo 带值选项 -u root 后取到 rm -> 拦',
+  },
+  {
+    id: '48',
+    command: `sudo -u root -H rm -rf ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'sudo 带值选项 + 无值选项 -H -> 拦',
+  },
+  {
+    id: '49',
+    command: `sudo -u root ls ${DEV_DIR}`,
+    blocked: false,
+    label: 'sudo 选项之后是只读动词 -> 放行',
+  },
+  {
+    id: '50',
+    command: `echo hi > ${DEV_DIR}/foo`,
+    blocked: true,
+    label: '> 重定向写入受保护路径 -> 拦',
+  },
+  {
+    id: '51',
+    command: `echo hi >> ${DEV_DIR}/foo`,
+    blocked: true,
+    label: '>> 追加重定向受保护路径 -> 拦',
+  },
+  {
+    id: '52',
+    command: 'echo hi > /tmp/foo',
+    blocked: false,
+    label: '重定向到非保护路径 -> 放行',
+  },
+  { id: '53', command: 'echo hi 2>&1', blocked: false, label: 'fd 复制 2>&1 不算文件写入 -> 放行' },
+  {
+    id: '54',
+    command: `dd if=/tmp/x of=${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'dd of= 指向受保护路径 -> 拦',
+  },
+  {
+    id: '55',
+    command: `dd if=${DEV_DIR}/x of=/tmp/foo`,
+    blocked: false,
+    label: 'dd if= 是读取语义 -> 放行',
+  },
+  {
+    id: '56',
+    command: `truncate -s 0 ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'truncate 目标受保护 -> 拦',
+  },
+  {
+    id: '57',
+    command: `echo hi | tee ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'tee 目标受保护 -> 拦',
+  },
+  {
+    id: '58',
+    command: 'echo hi | tee /tmp/foo',
+    blocked: false,
+    label: 'tee 目标非保护 -> 放行',
+  },
+  {
+    id: '59',
+    command: `python -c "open('${DEV_DIR}/foo', 'w').write('x')"`,
+    blocked: true,
+    label: 'python 写模式 open 受保护路径 -> 拦',
+  },
+  { id: '60', command: `python -c "print('hi')"`, blocked: false, label: 'python 只打印 -> 放行' },
+  {
+    id: '61',
+    command: `node -e "require('fs').writeFileSync('${DEV_DIR}/foo', 'x')"`,
+    blocked: true,
+    label: 'node writeFileSync 受保护路径 -> 拦',
+  },
+]
+
+for (const item of writingVerbCases) {
+  check(item.id, `${item.label}（${JSON.stringify(item.command)}）`, () => {
+    assert.equal(
+      mod.isProtectedPathModification(item.command),
+      item.blocked,
+      `isProtectedPathModification 期望 ${item.blocked}`,
+    )
+    const result = askGuard(bashExec(item.command))
+    if (item.blocked) {
+      assert.equal(result, 'blocked: protected path modification')
+    } else {
+      assert.equal(result, undefined, `guard 应放行，实际返回 ${JSON.stringify(result)}`)
+    }
+  })
+}
+
+// ===========================================================================
 // 收尾
 // ===========================================================================
 

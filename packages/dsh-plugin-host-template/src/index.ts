@@ -246,6 +246,50 @@ function resolveRulesOrder(ctx: Context): number {
 /** 卡 3 改进 2：命令开头的包装器，跳过它们取后面的真正动词 */
 const WRAPPER_COMMANDS = ['sudo', 'command', 'nohup', 'env']
 
+/**
+ * 卡 4 改进 0（修补卡 3 缺口）：包装器的「带值选项」名单。
+ *
+ * 卡 3 跳过包装器后直接把第一个非包装器 token 当动词，遇到 sudo -u root rm
+ * 会把 root 当成动词、漏掉真正的 rm。修复办法是：包装器之后凡是以 '-' 开头的
+ * token 一律继续跳过；但 -u root 这种「选项 + 值」的写法里值不以 '-' 开头，
+ * 只按前缀跳过就停在了 root 上。因此这里列出每个包装器会吃掉一个后继值的
+ * 选项，命中时多跳一格（--user=root 这种内联写法值就在 token 里，只需跳一格）。
+ *
+ * 对全部包装器生效：command -p ls / env -i rm 这类选项在前的写法同样适用。
+ */
+const WRAPPER_OPTION_VALUES: Record<string, string[]> = {
+  sudo: [
+    '-u',
+    '-g',
+    '-p',
+    '-C',
+    '-h',
+    '-r',
+    '-t',
+    '-U',
+    '--user',
+    '--group',
+    '--prompt',
+    '--chdir',
+    '--host',
+    '--role',
+    '--type',
+    '--other-user',
+  ],
+  env: [
+    '-u',
+    '-C',
+    '-S',
+    '--unset',
+    '--chdir',
+    '--split-string',
+    '--block-signal',
+    '--default-signal',
+  ],
+  command: ['-a'],
+  nohup: [],
+}
+
 /** 卡 3 改进 3：支持 -c 内层脚本的 shell 名字 */
 const SHELL_COMMANDS = ['bash', 'sh', 'zsh', 'dash']
 
@@ -258,20 +302,46 @@ function isEnvAssignment(token: string): boolean {
 }
 
 /**
- * 卡 3 改进 2：跳过命令开头的包装器，返回剩下的 token。
+ * 卡 4 改进 0：某个包装器选项是否要吃掉后面一个 token 作为它的值。
+ *
+ * @param wrapper 包装器动词名（sudo / env / command / nohup）
+ * @param token 包装器之后的选项 token，以 '-' 开头
+ * @returns 需要多跳一格返回 true
+ */
+function takesOptionValue(wrapper: string, token: string): boolean {
+  const options = WRAPPER_OPTION_VALUES[wrapper]
+  return options !== undefined && options.includes(token)
+}
+
+/**
+ * 卡 3 改进 2（卡 4 改进 0 修补）：跳过命令开头的包装器，返回剩下的 token。
  *
  * 规则：sudo / command / nohup / env 直接跳过；env 后面（以及命令开头）的
- * VAR=value 行内赋值也跳过；第一个「既不是包装器也不是赋值」的 token 才是动词。
- * 全是包装器 / 赋值时返回空数组，调用方按未命中处理。
+ * VAR=value 行内赋值也跳过；包装器之后以 '-' 开头的选项继续跳过，带值选项
+ * （sudo -u root）连值一起跳过；第一个「既不是包装器、不是赋值、也不是包装器
+ * 选项」的 token 才是动词。全是包装器 / 选项时返回空数组，调用方按未命中处理。
  *
  * @param tokens 一段命令的 token 列表
  * @returns 去掉开头包装器后的 token 列表
  */
 function unwrapWrappers(tokens: string[]): string[] {
   let index = 0
+  let wrapper: string | undefined
   while (index < tokens.length) {
-    if (WRAPPER_COMMANDS.includes(verbName(tokens[index])) || isEnvAssignment(tokens[index])) {
+    const token = tokens[index]
+    if (WRAPPER_COMMANDS.includes(verbName(token))) {
+      wrapper = verbName(token)
       index += 1
+      continue
+    }
+    if (isEnvAssignment(token)) {
+      index += 1
+      continue
+    }
+    // 卡 4 改进 0：包装器后的选项（以及带值选项的值）一并跳过，
+    // 这样 sudo -u root rm / command -p ls / env -i rm 都能看到真正的动词。
+    if (wrapper !== undefined && token.startsWith('-')) {
+      index += takesOptionValue(wrapper, token) ? 2 : 1
       continue
     }
     break
@@ -506,17 +576,109 @@ function operandPath(token: string): string {
   return eq >= 0 ? unquoted.slice(eq + 1) : unquoted
 }
 
+/** 去掉 token 首尾的引号（不动中间的字符） */
+function stripQuotes(token: string): string {
+  return token.replace(/^['"]|['"]$/g, '')
+}
+
+/** 卡 4：只认 of= 目标路径的写入动词（dd） */
+const DD_VERB = 'dd'
+
+/** 卡 4：任何绝对路径操作数都算写入目标的动词（截断 / 覆盖 / 复制流） */
+const OVERWRITE_VERBS = ['truncate', 'tee']
+
+/** 卡 4：内联脚本命令（-c / -e 脚本字符串） */
+const SCRIPT_VERBS = ['python', 'python3', 'node']
+
 /**
- * bash 命令级判断（卡 5 起，卡 3 接入 tokenizer）：命令里是否在对受保护路径做写 / 删 / 移动。
+ * 卡 4：python 内联脚本里「以写模式打开绝对路径」的模式。
  *
- * 卡 3 起不再手写 split，改用 collectSegments()：
- *   1. 先按引号感知地切成段（引号内的 && ; | 不算分隔符），并解开
+ * 只认 open( 的第一个参数是 / 开头的字符串、第二个参数是 w / a / x 三种写模式；
+ * 读取模式 'r' 与相对路径都不命中（不误伤只读与相对路径脚本）。
+ */
+const PYTHON_WRITE_OPEN = /open\s*\(\s*['"](\/[^'"]*)['"]\s*,\s*['"]([wax])['"]/gi
+
+/** 卡 4：node 内联脚本里的写文件调用，只认第一个参数是 / 开头的字符串 */
+const NODE_WRITE_CALL = /(?:writeFileSync|appendFileSync)\s*\(\s*['"](\/[^'"]*)['"]/gi
+
+/**
+ * 卡 4：从一段命令的 token 里找出 bash 重定向写入的目标路径。
+ *
+ * 支持 '> file'、'>> file'、'>file'、'>>file' 以及 '2>file' 这类带 fd 前缀的写法；
+ * 跳过 fd 复制（'2>&1'、'>&2'）——它们的「目标」以 & 开头而不是 /，天然不命中；
+ * '&>' 这类 & 在前的写法也不当作文件目标（'&' 不是数字 / 空前缀）。
+ *
+ * 同一个 token 里 '>' 后没有内容时（token 就是 '>' / '>>'），目标取下一个 token，
+ * 这样 '>file'（无空格）与 '> file' 两种写法都能覆盖。只收绝对路径目标。
+ *
+ * @param tokens 一段命令的 token 列表（已去包装器）
+ * @returns 重定向写入的绝对路径目标列表（可能为空）
+ */
+function redirectionTargets(tokens: string[]): string[] {
+  const targets: string[] = []
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    const gt = token.indexOf('>')
+    if (gt === -1) continue
+    // 只认 '>' 前面是空或纯数字的写法：排除 '2>&1' 之外的 & / 普通单词粘连。
+    if (!/^\d*$/.test(token.slice(0, gt))) continue
+
+    let cursor = gt
+    while (cursor < token.length && token[cursor] === '>') cursor += 1
+    let target = token.slice(cursor)
+    if (target.length === 0) {
+      const next = tokens[i + 1]
+      if (next === undefined) continue
+      target = next
+      i += 1
+    }
+    const cleaned = stripQuotes(target)
+    if (cleaned.startsWith('/')) targets.push(cleaned)
+  }
+  return targets
+}
+
+/**
+ * 卡 4：内联脚本（python -c / node -e）里是否在写受保护路径。
+ *
+ * 简单字符串扫描，不做 AST：python 认 open( 的写模式（w / a / x）+ 绝对路径，
+ * node 认 writeFileSync / appendFileSync + 绝对路径第一个参数。不区分大小写；
+ * 路径不是绝对路径就不命中；扫描不清一律放行。
+ *
+ * @param verb 展开后的动词名（python / python3 / node）
+ * @param text 该段命令的全部 token 拼成的字符串（含脚本体）
+ * @param pathsOverride 可选的受保护路径清单（测试注入用）
+ * @returns 命中受保护路径的脚本写入返回 true
+ */
+function inlineScriptModifiesProtectedPath(
+  verb: string,
+  text: string,
+  pathsOverride?: string[],
+): boolean {
+  const pattern = verb === 'node' ? NODE_WRITE_CALL : PYTHON_WRITE_OPEN
+  for (const match of text.matchAll(pattern)) {
+    const target = match[1]
+    if (target.startsWith('/') && isProtectedPath(target, pathsOverride)) return true
+  }
+  return false
+}
+
+/**
+ * bash 命令级判断（卡 5 起，卡 3 接入 tokenizer，卡 4 扩展写入动词）：
+ * 命令里是否在对受保护路径做写 / 删 / 移动。
+ *
+ * 先用 collectSegments() 展开：
+ *   1. 按引号感知地切成段（引号内的 && ; | 不算分隔符），并解开
  *      sudo / command / nohup / env FOO=bar 包装器、递归展开 bash -c；
- *   2. 每个展开后的段里，第一个 token 是动词，不是 rm / mv / cp 的段直接跳过；
- *   3. cp：只有「目标是受保护路径」才拦——cp 受保护路径 → 别处 是读取语义，
- *      放行。目标取动词之后最后一个非选项操作数；
- *   4. rm / mv：该段里任一操作数落在受保护路径内就拦——rm 是删除，mv 无论
- *      朝哪个方向都会改动受保护那一侧。
+ *      （卡 4 起包装器后的选项也跳过，sudo -u root rm 能看到 rm）
+ *   2. 每段先扫重定向写入目标（> / >> / >file，跳过 fd 复制）；
+ *   3. 再按动词分派：
+ *      - cp：只有「目标是受保护路径」才拦——cp 受保护路径 → 别处 是读取语义，
+ *        放行。目标取动词之后最后一个非选项操作数；
+ *      - rm / mv：该段里任一操作数落在受保护路径内就拦；
+ *      - dd：只看 of= 的目标（if= 是读取）；
+ *      - truncate / tee：任一绝对路径操作数落在受保护路径内就拦；
+ *      - python / node：内联脚本里以写模式打开 / 写文件调用指向受保护路径就拦。
  *
  * 引号内的 rm（如 `echo "rm /path"`）被 tokenizer 收成一个整体 token，不再被当成动词。
  * 只认绝对路径 token（以斜杠开头），相对路径的相对基准解析留给后面的卡。
@@ -535,9 +697,13 @@ export function isProtectedPathModification(
   const segments = collectSegments(command, 0)
 
   for (const tokens of segments) {
-    const verb = verbName(tokens[0])
-    if (!MUTATING_VERBS.includes(verb)) continue
+    // 卡 4：重定向写入不依赖动词（echo hi > /path 的动词是 echo），
+    // 所以每一段都先扫一遍重定向目标，再按动词分派。
+    for (const target of redirectionTargets(tokens)) {
+      if (isProtectedPath(target, pathsOverride)) return true
+    }
 
+    const verb = verbName(tokens[0])
     const operands = tokens.slice(1)
 
     if (verb === 'cp') {
@@ -551,9 +717,38 @@ export function isProtectedPathModification(
       continue
     }
 
-    for (const token of operands) {
-      const candidate = operandPath(token)
-      if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
+    if (MUTATING_VERBS.includes(verb)) {
+      for (const token of operands) {
+        const candidate = operandPath(token)
+        if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
+      }
+      continue
+    }
+
+    // 卡 4：dd 只看 of= 的目标；if= 是读取语义，不看。
+    if (verb === DD_VERB) {
+      for (const token of operands) {
+        const raw = stripQuotes(token)
+        if (!raw.startsWith('of=')) continue
+        const target = raw.slice(3)
+        if (target.startsWith('/') && isProtectedPath(target, pathsOverride)) return true
+      }
+      continue
+    }
+
+    // 卡 4：truncate / tee 的任一绝对路径操作数都是写入目标（truncate -s N / tee -a）。
+    if (OVERWRITE_VERBS.includes(verb)) {
+      for (const token of operands) {
+        const candidate = operandPath(token)
+        if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
+      }
+      continue
+    }
+
+    // 卡 4：python -c / node -e 内联脚本里的写文件调用（简单字符串扫描）。
+    if (SCRIPT_VERBS.includes(verb)) {
+      if (inlineScriptModifiesProtectedPath(verb, tokens.join(' '), pathsOverride)) return true
+      continue
     }
   }
 
