@@ -242,7 +242,7 @@ DSH_HOME=~/dsh-fortress-dev dsh plugin --profile web add \
 [dsh-bulwark:guard] bash {"command":"..."}
 ```
 
-（源码位置：packages/dsh-plugin-host-template/src/index.ts 的
+（源码位置：src/index.ts 的
 ctx.tools.guard(...) 回调里 console.log('[dsh-bulwark:guard]', ...)。）
 
 - 正常加载：启动 DSH 后随便让它跑一个 bash 命令，终端立刻出现这一行；

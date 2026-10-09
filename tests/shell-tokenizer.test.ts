@@ -6,7 +6,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { splitCommand } from '../packages/dsh-plugin-host-template/src/shell-tokenizer.ts'
+import { splitCommand } from '../src/shell-tokenizer.ts'
 
 // ---------------------------------------------------------------------------
 // 迷你测试框架（与 tests/e2e.test.ts 同款）

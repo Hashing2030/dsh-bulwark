@@ -1,9 +1,9 @@
 /**
  * dsh-plugin-host-template —— 宿主端插件入口
  *
- * 总体：本文件是宿主半区（Node.js 侧）的唯一入口，被 tsdown 编译为
- *       packages/dsh-plugin-host-template/dist/index.js，由根目录 cordis.yml
- *       的 loader 条目按包名 `dsh-plugin-host-template` 挂载。
+ * 总体：本文件是整个包（单包，宿主半区）的唯一入口，被 tsdown 编译为
+ *       dist/index.js，由根目录 cordis.yml 的 loader 条目按包名
+ *       `dsh-bulwark` 挂载。
  *
  * 定义：导出形态遵循项目约定——**只用具名导出**（name / inject / apply），
  *       不使用默认导出对象，两种形态不混写。

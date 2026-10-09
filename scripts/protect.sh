@@ -19,7 +19,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PLUGIN_ENTRY="${REPO_ROOT}/packages/dsh-plugin-host-template/src/index.ts"
+PLUGIN_ENTRY="${REPO_ROOT}/src/index.ts"
 
 # DSH 主目录（卡 7）：DSH 启动时会设置 DSH_HOME；没设时退回 ~/.dsh
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"

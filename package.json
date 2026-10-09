@@ -1,7 +1,7 @@
 {
   "name": "dsh-bulwark",
   "version": "0.1.0",
-  "description": "DSH bundle 插件：向 DeepSeek Harness 的 systemPrompt 注入守则段，并在工具调用层拦截受保护路径的修改与受保护插件的卸载。",
+  "description": "DSH plugin: rule injection + tool/path protection",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -11,21 +11,19 @@
     "guard",
     "protection"
   ],
-  "main": "./packages/dsh-plugin-host-template/dist/index.js",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./packages/dsh-plugin-host-template/dist/index.js",
-    "./client": "./packages/dsh-plugin-client-template/dist/index.cjs",
+    ".": "./dist/index.js",
     "./package.json": "./package.json"
   },
   "files": [
+    "dist",
     "cordis.yml",
-    "cordis.patch.yml",
-    "packages/dsh-plugin-host-template/dist",
-    "packages/dsh-plugin-host-template/cordis.patch.yml",
-    "packages/dsh-plugin-client-template/dist",
-    "packages/dsh-plugin-client-template/cordis.patch.yml",
-    "README.md",
-    "LICENSE"
+    "scripts/protect.sh",
+    "CONFIG.md",
+    "DISASTER-RECOVERY.md",
+    "SCRIPT-USAGE.md",
+    "README.md"
   ],
   "dsh": {
     "bundle": {
@@ -33,21 +31,12 @@
     }
   },
   "scripts": {
-    "build": "tsdown && node scripts/wrap-client-bundle.mjs",
-    "prepare": "pnpm build",
+    "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "node --experimental-strip-types tests/e2e.test.ts",
-    "test:coverage": "vitest run --coverage",
-    "clean": "pnpm -r run clean",
-    "dev": "dsh web --patch cordis.yml",
-    "register": "node scripts/auto-register.js",
-    "register:win": "scripts\\auto-register.cmd",
-    "register:unix": "./scripts/auto-register.sh"
-  },
-  "dependencies": {
-    "dsh-plugin-host-template": "workspace:^0.1.0",
-    "dsh-plugin-client-template": "workspace:^0.1.0"
+    "clean": "rm -rf dist",
+    "dev": "dsh web --patch cordis.yml"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -55,5 +44,8 @@
     "tsdown": "^0.11.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
   }
 }

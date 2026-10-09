@@ -141,7 +141,7 @@
 node -e "console.log(require('./package.json').name)"      # -> dsh-bulwark
 
 # 2. 只有数据目录还带旧名
-grep -rn "dsh-fortress" packages/dsh-plugin-host-template/src/index.ts
+grep -rn "dsh-fortress" src/index.ts
 # -> 只剩 ~/dsh-fortress-dev 相关路径
 
 # 3. 测试

@@ -16,6 +16,6 @@
       "@deepseek-ai/*": ["./types/deepseek-ai.d.ts"]
     }
   },
-  "include": ["packages/*/src/**/*.ts", "types/**/*.d.ts"],
+  "include": ["src/**/*.ts", "types/**/*.d.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

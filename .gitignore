@@ -80,8 +80,9 @@ out
 
 # Nuxt.js build / generate output
 .nuxt
-dist
 .output
+
+# 注意：本包的 dist/ 是随包提交的构建产物（从 GitHub 安装时直接可用），刻意不忽略。
 
 # Gatsby files
 .cache/

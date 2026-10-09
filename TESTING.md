@@ -14,8 +14,8 @@ pnpm test:e2e
 
 - **环境**：Node ≥ 22.6（本机 v26.10.0；该版本已默认擦除类型，`--experimental-strip-types` 保留为显式写法）。零第三方依赖，只用 `node:assert` / `node:fs` / `node:os` / `node:path`。
 - **退出码**：0 = 23 条全过；非 0 = 有失败，末尾打印失败明细和原因。
-- **不依赖 DSH 运行时**：测试动态 import 真实源码 `packages/dsh-plugin-host-template/src/index.ts`（它只运行 `node:fs` / `node:path`，对 cordis 是 `import type`，纯 Node 可直接加载），再用一个假 ctx 调真实 `apply()`，抓出真实的 `tools.guard` 回调，最后用真实的 exec 形状 `{ name, arguments }` 驱动它。**没有任何一份复制的判定逻辑。**
-- **与 `pnpm test` 的关系**：`pnpm test` 是 vitest，include 只有 `packages/*/src/**/*.test.ts` 和 `packages/*/__tests__/**/*.test.ts`，因此**不会**收录根目录这份 e2e —— 这是刻意的：e2e 需要真实文件系统和真实配置路径，不适合放进 vitest 的环境矩阵。两条线互不干扰。
+- **不依赖 DSH 运行时**：测试动态 import 真实源码 `src/index.ts`（它只运行 `node:fs` / `node:path`，对 cordis 是 `import type`，纯 Node 可直接加载），再用一个假 ctx 调真实 `apply()`，抓出真实的 `tools.guard` 回调，最后用真实的 exec 形状 `{ name, arguments }` 驱动它。**没有任何一份复制的判定逻辑。**
+- **与 `pnpm test` 的关系**：`pnpm test` 是 vitest，include 只有 `src/**/*.test.ts` 和 `src/**/__tests__/**/*.test.ts`，因此**不会**收录根目录这份 e2e —— 这是刻意的：e2e 需要真实文件系统和真实配置路径，不适合放进 vitest 的环境矩阵。两条线互不干扰。
 - **副作用**：只在系统临时目录建一个 `dsh-fortress-e2e-*` 目录，结束时递归删除；对真实 `config.json` 只读不写，不启动任何 DSH 进程。
 
 ---
@@ -161,7 +161,7 @@ rm /Users/liuzhaoyang/dsh-fortress-dev/guard-probe.txt      # 清理探针
 - **第 5-19 条失败**：先看 `/Users/liuzhaoyang/dsh-fortress-dev/config.json` —— 这几条依赖 `protectedPaths` 含 `/Users/liuzhaoyang/dsh-fortress-dev`、`protectedRemovalPatterns` 含 5 条默认规则。恢复默认见 `CONFIG.md` 里的示例 config.json。注意 `CONFIG` 是模块加载时算一次的，改完配置文件要重跑测试（DSH 里则要重启进程）。
 - **第 1-4 条失败**：它们只碰临时目录，失败基本就是 `loadConfig` 的回退分支被改坏了。
 - **报「apply() 没有注册 tools.guard 回调」**：假 ctx 形状过时了。对照 `index.ts` 里 `apply()` 用到的 ctx API（`get` / `effect` / `tools.guard` / `systemPrompt.getSectionOrder` / `systemPrompt.section`），同步补到测试的 `fakeContext()`。
-- **类型检查**：`tsconfig.json` 的 include 只有 `packages/*/src/**/*.ts`，且 exclude 了 `**/*.test.ts`，所以这份 e2e 不参与 `pnpm typecheck`；它靠 Node 的类型擦除运行，不靠 tsc。
+- **类型检查**：`tsconfig.json` 的 include 只有 `src/**/*.ts`，且 exclude 了 `**/*.test.ts`，所以这份 e2e 不参与 `pnpm typecheck`；它靠 Node 的类型擦除运行，不靠 tsc。
 
 ---
 
@@ -170,6 +170,6 @@ rm /Users/liuzhaoyang/dsh-fortress-dev/guard-probe.txt      # 清理探针
 | 文件 | 作用 |
 | --- | --- |
 | `tests/e2e.test.ts` | 本说明对应的自动化测试（23 条） |
-| `packages/dsh-plugin-host-template/src/index.ts` | 被测源码（守则段 + tools.guard） |
+| `src/index.ts` | 被测源码（守则段 + tools.guard） |
 | `CONFIG.md` | config.json 字段说明与示例 |
 | `DISASTER-RECOVERY.md` | 逃生通道与恢复流程 |

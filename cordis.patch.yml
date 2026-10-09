@@ -5,18 +5,13 @@
 #
 # 本地开发补丁（dsh web --patch cordis.yml）
 #
-# 注意：loader 条目必须按包名解析（host 半区走包 main，浏览器半区由
-# dsh-client-modules 按包名扫描 dsh.client/exports["./client"]），
-# 不能用 file:// 源码路径——那会使客户端插件无法被编入 __DSH_BOOT__。
+# loader 条目按包名解析——根包的 main 指向 dist/index.js。
 # 修改源码后执行 pnpm build 再启动。
 #
-# 逃生通道（卡 7）：设置 DSH_FORTRESS_DISABLE=1 可一键禁用下列两个条目，
-# 让 DSH 在完全不加载 dsh-bulwark 的情况下启动；清除该环境变量即恢复。
+# 逃生通道：设置 DSH_FORTRESS_DISABLE=1 可一键禁用 dsh-bulwark，
+# 让 DSH 在完全不加载它的情况下启动；清除该环境变量即恢复。
 # 完整说明见 DISASTER-RECOVERY.md。
 - insert:
-    - id: dsh-plugin-host-template
-      name: dsh-plugin-host-template
-      disabled: !!js process.env.DSH_FORTRESS_DISABLE === '1'
-    - id: dsh-plugin-client-template
-      name: dsh-plugin-client-template
+    - id: dsh-bulwark
+      name: dsh-bulwark
       disabled: !!js process.env.DSH_FORTRESS_DISABLE === '1'

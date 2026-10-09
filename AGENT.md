@@ -10,7 +10,7 @@
 - 配置 Schema：Schemastery（`@deepseek-ai/schemastery`）
 - 客户端：React + 客户端槽位（slots / clientRuntime / SessionStandardProps）
 - 类型化 RPC：Typert RPC（构建时生成客户端桩 + 宿主服务桩）
-- 双包拆分：`packages/dsh-plugin-host-template`（宿主）/ `packages/dsh-plugin-client-template`（客户端）
+- 单包结构（卡 8）：宿主代码在根包 `src/`，客户端半区（Canvas demo）已整体删除
 
 ## 核心操作指令
 

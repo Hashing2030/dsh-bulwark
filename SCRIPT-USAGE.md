@@ -115,7 +115,7 @@ $ ./scripts/protect.sh show
 
 ### 1.7 test
 
-动态 `import` 插件的 `packages/dsh-plugin-host-template/src/index.ts`，调用它的
+动态 `import` 插件的 `src/index.ts`，调用它的
 `isProtectedRemoval` / `isProtectedPathModification`，输出 `BLOCKED` 或 `ALLOWED`；
 被拦时附一行 `reason:` 说明是命中删除规则还是命中受保护路径。
 

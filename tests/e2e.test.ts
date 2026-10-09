@@ -2,7 +2,7 @@
  * dsh-fortress 卡 8：端到端测试
  *
  * 设计原则：
- *   - 直接动态 import 真实插件源码 packages/dsh-plugin-host-template/src/index.ts，
+ *   - 直接动态 import 真实插件源码 src/index.ts，
  *     不复制、不重写任何判定逻辑（导出仅供测试驱动，见 index.ts 里的 export 注释）。
  *   - 不依赖 DSH 运行时：用一个假 ctx 调 apply() 拿到真实的 tools.guard 回调，
  *     再用真实的 exec 形状（{ name, arguments }）喂给它。
@@ -73,10 +73,7 @@ interface PluginModule {
 type GuardExec = { name?: unknown; arguments?: unknown }
 type Guard = (exec: GuardExec | undefined) => string | undefined
 
-const MODULE_URL = new URL(
-  '../packages/dsh-plugin-host-template/src/index.ts',
-  import.meta.url,
-).href
+const MODULE_URL = new URL('../src/index.ts', import.meta.url).href
 
 const mod = (await import(MODULE_URL)) as PluginModule
 assert.equal(mod.name, 'dsh-plugin-host-template', '模块应导出插件名')
