@@ -19,7 +19,7 @@
  *       宿主能力（tools / webServer / systemPrompt 等）统一由 DSH 在运行时注入。
  */
 
-import { readFileSync, realpathSync, statSync, watch } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync, watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -604,15 +604,18 @@ const NODE_WRITE_CALL = /(?:writeFileSync|appendFileSync)\s*\(\s*['"](\/[^'"]*)[
 /**
  * 卡 4：从一段命令的 token 里找出 bash 重定向写入的目标路径。
  *
- * 支持 '> file'、'>> file'、'>file'、'>>file' 以及 '2>file' 这类带 fd 前缀的写法；
- * 跳过 fd 复制（'2>&1'、'>&2'）——它们的「目标」以 & 开头而不是 /，天然不命中；
- * '&>' 这类 & 在前的写法也不当作文件目标（'&' 不是数字 / 空前缀）。
+ * 支持 '> file'、'>> file'、'>file'、'>>file'、'2>file' 这类带 fd 前缀的写法，
+ * 以及卡 5 补上的 '&>file' / '&>>file'（bash 里等价于 '>file 2>&1'）。
  *
- * 同一个 token 里 '>' 后没有内容时（token 就是 '>' / '>>'），目标取下一个 token，
- * 这样 '>file'（无空格）与 '> file' 两种写法都能覆盖。只收绝对路径目标。
+ * 卡 5 起前缀判定放宽为「空 / 纯数字 / &」三种，其它一律不算重定向；
+ * 目标若以 & 开头（'2>&1'、'>&2'、'&> &1'）仍然是 fd 复制而不是文件写入，跳过。
+ *
+ * 同一个 token 里 '>' 后没有内容时（token 就是 '>' / '>>' / '&>'），目标取下一个
+ * token，这样 '>file'（无空格）与 '> file' 两种写法都能覆盖。返回值不再限定绝对
+ * 路径：相对路径交给调用方按 cwd 解析（卡 5 起）。
  *
  * @param tokens 一段命令的 token 列表（已去包装器）
- * @returns 重定向写入的绝对路径目标列表（可能为空）
+ * @returns 重定向写入的目标路径列表（可能为空，可能含相对路径）
  */
 function redirectionTargets(tokens: string[]): string[] {
   const targets: string[] = []
@@ -620,8 +623,9 @@ function redirectionTargets(tokens: string[]): string[] {
     const token = tokens[i]
     const gt = token.indexOf('>')
     if (gt === -1) continue
-    // 只认 '>' 前面是空或纯数字的写法：排除 '2>&1' 之外的 & / 普通单词粘连。
-    if (!/^\d*$/.test(token.slice(0, gt))) continue
+    // 卡 5：'>' 前面只允许空、纯数字（2>）或 &（&> / &>>）。
+    // 普通单词粘连（比如目录名里的 >）与其它写法一律不算重定向。
+    if (!/^(\d*|&)$/.test(token.slice(0, gt))) continue
 
     let cursor = gt
     while (cursor < token.length && token[cursor] === '>') cursor += 1
@@ -633,9 +637,69 @@ function redirectionTargets(tokens: string[]): string[] {
       i += 1
     }
     const cleaned = stripQuotes(target)
-    if (cleaned.startsWith('/')) targets.push(cleaned)
+    // '&N' / '&-' 是 fd 复制；空目标没有意义。两者都不是文件写入。
+    if (cleaned.length === 0 || cleaned.startsWith('&')) continue
+    targets.push(cleaned)
   }
   return targets
+}
+
+/**
+ * 卡 5：取相对路径解析的初始 cwd。
+ *
+ * 优先用调用方注入的 workspace（apply() 的 guard 回调里从 exec 上拿），
+ * 其次用 process.cwd()（可能因 cwd 被删而抛错，所以包 try）；两者都拿不到
+ * 返回 undefined，调用方据此跳过全部相对路径判断。
+ *
+ * @param initialCwd 调用方注入的初始 cwd（可选）
+ * @returns 初始 cwd，或 undefined
+ */
+function resolveInitialCwd(initialCwd?: string): string | undefined {
+  if (typeof initialCwd === 'string' && initialCwd.length > 0) return initialCwd
+  try {
+    const cwd = process.cwd()
+    return typeof cwd === 'string' && cwd.length > 0 ? cwd : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 卡 5：把一个路径 token 解析成绝对路径。
+ *
+ * 绝对路径原样返回（绝对路径优先，不受 cwd 影响）；相对路径在 cwd 已知时用
+ * path.resolve() 拼成绝对路径；cwd 未知（起点未知或 cd 失败）时返回 undefined，
+ * 调用方据此跳过判断。内部不抛错。
+ *
+ * @param raw 原始路径字符串（可能带引号）
+ * @param cwd 当前 cd 跟踪出来的工作目录（可能 undefined）
+ * @returns 绝对路径，或 undefined
+ */
+function resolvePathToken(raw: string, cwd: string | undefined): string | undefined {
+  const cleaned = stripQuotes(raw)
+  if (cleaned.length === 0) return undefined
+  if (cleaned.startsWith('/')) return cleaned
+  if (cwd === undefined || cwd.length === 0) return undefined
+  try {
+    return resolve(cwd, cleaned)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 卡 5：取 cd 的目标操作数：动词之后第一个非选项 token（去引号）。
+ *
+ * @param tokens 一段 cd 命令的 token 列表（已去包装器）
+ * @returns cd 的目标，或 undefined（没有操作数）
+ */
+function cdTarget(tokens: string[]): string | undefined {
+  for (let i = 1; i < tokens.length; i += 1) {
+    const candidate = stripQuotes(tokens[i])
+    if (candidate.startsWith('-') && candidate.length > 1) continue
+    return candidate
+  }
+  return undefined
 }
 
 /**
@@ -681,29 +745,53 @@ function inlineScriptModifiesProtectedPath(
  *      - python / node：内联脚本里以写模式打开 / 写文件调用指向受保护路径就拦。
  *
  * 引号内的 rm（如 `echo "rm /path"`）被 tokenizer 收成一个整体 token，不再被当成动词。
- * 只认绝对路径 token（以斜杠开头），相对路径的相对基准解析留给后面的卡。
+ * 卡 5 起支持相对路径：段内跟踪 cd 链得到当前 cwd，相对路径用 path.resolve() 解析后
+ * 再判定；绝对路径始终优先判定，不受 cwd 影响。cd 目标不存在（fs.existsSync 为假）
+ * 视为 cd 失败，之后所有相对路径判断跳过，直到下一次 cd 成功；初始 cwd 拿不到时
+ * （既没有注入 workspace 也拿不到 process.cwd()）同样跳过相对路径判断。
  *
  * 守卫体内不抛错：tokenizer 抛错时 collectSegments() 返回空列表，直接放行。
  *
  * @param command bash 工具的原始命令字符串
  * @param pathsOverride 可选的受保护路径清单（测试注入用）；省略时用 CONFIG.protectedPaths
+ * @param initialCwd 可选的初始工作目录（apply() 的 guard 从 exec.workspace 注入）
  * @returns 命中受保护路径的写 / 删返回 true
  */
 // 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
 export function isProtectedPathModification(
   command: string,
   pathsOverride?: string[],
+  initialCwd?: string,
 ): boolean {
   const segments = collectSegments(command, 0)
+
+  // 卡 5：在同一条命令内跟踪 cd 造成的 cwd 变化。拿不到初始 cwd 时，
+  // 相对路径判断整条跳过（绝对路径判断照常），并打一条日志说明。
+  let cwd = resolveInitialCwd(initialCwd)
+  if (cwd === undefined) {
+    console.log('[dsh-fortress:guard] cwd unavailable, relative path checks skipped')
+  }
 
   for (const tokens of segments) {
     // 卡 4：重定向写入不依赖动词（echo hi > /path 的动词是 echo），
     // 所以每一段都先扫一遍重定向目标，再按动词分派。
     for (const target of redirectionTargets(tokens)) {
-      if (isProtectedPath(target, pathsOverride)) return true
+      const absolute = resolvePathToken(target, cwd)
+      if (absolute !== undefined && isProtectedPath(absolute, pathsOverride)) return true
     }
 
     const verb = verbName(tokens[0])
+
+    // 卡 5：cd 改变后续段的相对路径基准。cd 目标不存在（或解析不出来）时把 cwd
+    // 置为未知，之后所有相对路径判断都跳过，直到下一次 cd 成功。跨段延续，
+    // 管道也延续（对防御来说更保守）。
+    if (verb === 'cd') {
+      const target = cdTarget(tokens)
+      const absolute = target === undefined ? undefined : resolvePathToken(target, cwd)
+      cwd = absolute !== undefined && existsSync(absolute) ? absolute : undefined
+      continue
+    }
+
     const operands = tokens.slice(1)
 
     if (verb === 'cp') {
@@ -711,7 +799,8 @@ export function isProtectedPathModification(
       for (let i = operands.length - 1; i >= 0; i -= 1) {
         const candidate = operandPath(operands[i])
         if (candidate.startsWith('-')) continue
-        if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
+        const absolute = resolvePathToken(candidate, cwd)
+        if (absolute !== undefined && isProtectedPath(absolute, pathsOverride)) return true
         break
       }
       continue
@@ -720,7 +809,8 @@ export function isProtectedPathModification(
     if (MUTATING_VERBS.includes(verb)) {
       for (const token of operands) {
         const candidate = operandPath(token)
-        if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
+        const absolute = resolvePathToken(candidate, cwd)
+        if (absolute !== undefined && isProtectedPath(absolute, pathsOverride)) return true
       }
       continue
     }
@@ -730,8 +820,8 @@ export function isProtectedPathModification(
       for (const token of operands) {
         const raw = stripQuotes(token)
         if (!raw.startsWith('of=')) continue
-        const target = raw.slice(3)
-        if (target.startsWith('/') && isProtectedPath(target, pathsOverride)) return true
+        const absolute = resolvePathToken(raw.slice(3), cwd)
+        if (absolute !== undefined && isProtectedPath(absolute, pathsOverride)) return true
       }
       continue
     }
@@ -740,7 +830,8 @@ export function isProtectedPathModification(
     if (OVERWRITE_VERBS.includes(verb)) {
       for (const token of operands) {
         const candidate = operandPath(token)
-        if (candidate.startsWith('/') && isProtectedPath(candidate, pathsOverride)) return true
+        const absolute = resolvePathToken(candidate, cwd)
+        if (absolute !== undefined && isProtectedPath(absolute, pathsOverride)) return true
       }
       continue
     }
@@ -824,7 +915,16 @@ export function apply(ctx: Context): void {
             }
 
             // 卡 5：对受保护路径的写 / 删 / 移动；cp 受保护路径 → 别处 属于读取，放行。
-            if (isProtectedPathModification(command)) {
+            // 卡 5 起把 exec 上的 workspace 作为相对路径解析的初始 cwd（没有这个字段
+            // 就退回 process.cwd()，两者都没有时函数内部跳过相对路径判断）。
+            const workspace = exec?.workspace
+            if (
+              isProtectedPathModification(
+                command,
+                undefined,
+                typeof workspace === 'string' ? workspace : undefined,
+              )
+            ) {
               return 'blocked: protected path modification'
             }
           }

@@ -671,6 +671,93 @@ for (const item of writingVerbCases) {
 }
 
 // ===========================================================================
+// 62-71 卡 5：&> 重定向修补 + 相对路径解析（cd 链跟踪）
+// ===========================================================================
+
+group('62-71 卡 5：&> 重定向修补 + 相对路径解析')
+
+// 同样走 isProtectedPathModification + 真实 guard 双路验证。
+// 64-71 依赖 DEV_DIR 真实存在（fs.existsSync 用它判断 cd 是否成功）。
+const relativePathCases: Array<{ id: string; command: string; blocked: boolean; label: string }> = [
+  {
+    id: '62',
+    command: `echo hi &> ${DEV_DIR}/foo`,
+    blocked: true,
+    label: '&> 重定向写入受保护路径 -> 拦',
+  },
+  {
+    id: '63',
+    command: `echo hi &>> ${DEV_DIR}/foo`,
+    blocked: true,
+    label: '&>> 追加重定向受保护路径 -> 拦',
+  },
+  {
+    id: '64',
+    command: `cd ${DEV_DIR} && rm -rf foo`,
+    blocked: true,
+    label: 'cd 到受保护区后 rm 相对路径 -> 拦',
+  },
+  {
+    id: '65',
+    command: `cd /tmp && cd ${DEV_DIR} && rm foo`,
+    blocked: true,
+    label: '两次 cd 链走到受保护区 -> 拦',
+  },
+  {
+    id: '66',
+    command: `cd ${DEV_DIR} && cd /tmp && rm foo`,
+    blocked: false,
+    label: 'cd 链离开受保护区 -> 放行',
+  },
+  {
+    id: '67',
+    command: `cd ${DEV_DIR} && rm foo bar`,
+    blocked: true,
+    label: '多个相对路径操作数 -> 拦',
+  },
+  {
+    id: '68',
+    command: 'cd /nonexistent && rm foo',
+    blocked: false,
+    label: 'cd 失败后跳过相对路径判断 -> 放行',
+  },
+  {
+    id: '69',
+    command: `cd ${DEV_DIR} && cp /tmp/x foo`,
+    blocked: true,
+    label: 'cp 相对目标落在受保护区 -> 拦',
+  },
+  {
+    id: '70',
+    command: `cd /tmp && rm -rf ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'cwd 非保护区但绝对路径指向受保护区 -> 拦',
+  },
+  {
+    id: '71',
+    command: `cd ${DEV_DIR} && echo hi > foo`,
+    blocked: true,
+    label: '重定向相对路径落在受保护区 -> 拦',
+  },
+]
+
+for (const item of relativePathCases) {
+  check(item.id, `${item.label}（${JSON.stringify(item.command)}）`, () => {
+    assert.equal(
+      mod.isProtectedPathModification(item.command),
+      item.blocked,
+      `isProtectedPathModification 期望 ${item.blocked}`,
+    )
+    const result = askGuard(bashExec(item.command))
+    if (item.blocked) {
+      assert.equal(result, 'blocked: protected path modification')
+    } else {
+      assert.equal(result, undefined, `guard 应放行，实际返回 ${JSON.stringify(result)}`)
+    }
+  })
+}
+
+// ===========================================================================
 // 收尾
 // ===========================================================================
 
