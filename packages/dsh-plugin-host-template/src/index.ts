@@ -23,6 +23,9 @@ import { readFileSync, realpathSync, statSync, watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
 import { resolve } from 'node:path'
 
+// 卡 3：shell 词法切分（纯函数、零依赖），用来替代脆弱的字符串 includes / 手写 split
+import { splitCommand } from './shell-tokenizer.ts'
+
 // 类型桩来源：根 tsconfig.json 的 paths "@deepseek-ai/*" -> "./types/deepseek-ai.d.ts"
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -240,14 +243,135 @@ function resolveRulesOrder(ctx: Context): number {
   return anchor
 }
 
+/** 卡 3 改进 2：命令开头的包装器，跳过它们取后面的真正动词 */
+const WRAPPER_COMMANDS = ['sudo', 'command', 'nohup', 'env']
+
+/** 卡 3 改进 3：支持 -c 内层脚本的 shell 名字 */
+const SHELL_COMMANDS = ['bash', 'sh', 'zsh', 'dash']
+
+/** 卡 3 改进 3：bash -c 递归的最大层数，超过就按普通字符串处理 */
+const MAX_SHELL_NESTING = 3
+
+/** 形如 VAR=value 的环境变量前缀（env 的参数，也是常见的行内赋值） */
+function isEnvAssignment(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)
+}
+
 /**
- * 删除语义识别（卡 4 最小闭环）：判断一条 bash 命令是否在删除受保护工具。
+ * 卡 3 改进 2：跳过命令开头的包装器，返回剩下的 token。
  *
- * 这一版故意只做简单字符串匹配、不做完整 shell 解析（tokenizer 是后面的卡），
- * 所以像 `dsh plugin remove @scope/dsh-fortress` 这种变体认不出来，属于已知局限。
- * 规则（卡 6 起）来自配置的 protectedRemovalPatterns：一条规则是一组
- * { keywords: [...] }，命令「同时包含该规则的全部关键词」即命中；命中任一
- * 规则就返回 true。默认规则（DEFAULT_CONFIG，等价于卡 4 的 5 条硬编码）：
+ * 规则：sudo / command / nohup / env 直接跳过；env 后面（以及命令开头）的
+ * VAR=value 行内赋值也跳过；第一个「既不是包装器也不是赋值」的 token 才是动词。
+ * 全是包装器 / 赋值时返回空数组，调用方按未命中处理。
+ *
+ * @param tokens 一段命令的 token 列表
+ * @returns 去掉开头包装器后的 token 列表
+ */
+function unwrapWrappers(tokens: string[]): string[] {
+  let index = 0
+  while (index < tokens.length) {
+    if (WRAPPER_COMMANDS.includes(verbName(tokens[index])) || isEnvAssignment(tokens[index])) {
+      index += 1
+      continue
+    }
+    break
+  }
+  return tokens.slice(index)
+}
+
+/**
+ * 卡 3：把一条命令行展开成「待判定的 token 段」列表。
+ *
+ * 三件事叠在一起：
+ *   1. 用 splitCommand() 做引号感知的词法切分（改进 1）——引号内的 rm 不再
+ *      是独立 token，引号内的 && ; | 也不再切段；
+ *   2. unwrapWrappers() 解开 sudo / env FOO=bar / command / nohup（改进 2）；
+ *   3. 遇到 bash -c / sh -c 时取 -c 后那个 token 递归解析，最多 3 层（改进 3），
+ *      超过层数就当普通字符串（shell 动词本身不是写 / 删动词，等于放行）。
+ *
+ * 硬约束：tokenizer 抛错时捕获并返回空数组，调用方一律走放行，绝不向上抛。
+ *
+ * @param command bash 工具的原始命令字符串
+ * @param depth 当前递归层数，顶层传 0
+ * @returns 展开后的 token 段列表（可能为空）
+ */
+function collectSegments(command: string, depth: number): string[][] {
+  let rawSegments: string[][]
+  try {
+    rawSegments = splitCommand(command)
+  } catch {
+    return []
+  }
+
+  const result: string[][] = []
+  for (const raw of rawSegments) {
+    const tokens = unwrapWrappers(raw)
+    if (tokens.length === 0) continue
+
+    const verb = verbName(tokens[0])
+    if (SHELL_COMMANDS.includes(verb)) {
+      if (depth >= MAX_SHELL_NESTING) continue
+      const flagIndex = tokens.indexOf('-c')
+      if (flagIndex === -1 || flagIndex + 1 >= tokens.length) continue
+      for (const inner of collectSegments(tokens[flagIndex + 1], depth + 1)) {
+        result.push(inner)
+      }
+      continue
+    }
+
+    result.push(tokens)
+  }
+  return result
+}
+
+/**
+ * 卡 3：单个 token 是否匹配关键词的一个片段。
+ *
+ * 匹配刻意收紧到「整个 token 相等」或「以 / 分隔的末段相等」：
+ *   - 'dsh-fortress' 命中 token 'dsh-fortress' 与 '@scope/dsh-fortress'；
+ *   - 关键词若只出现在引号包住的整段里（token 内含空格，比如
+ *     `"pnpm remove dsh-fortress"`），不算命中——引号内是数据不是命令。
+ *
+ * @param token splitCommand 切出来的单个 token
+ * @param part 关键词按空白拆出来的片段
+ * @returns 命中返回 true
+ */
+function tokenMatchesKeywordPart(token: string, part: string): boolean {
+  if (token === part) return true
+  if (token.includes(' ')) return false
+  return token.endsWith('/' + part)
+}
+
+/**
+ * 关键词（可以含空格，如 'dsh plugin'）是否作为连续 token 子序列出现。
+ *
+ * @param tokens 命令展开后的全部 token
+ * @param keyword 配置里的一条关键词
+ * @returns 命中返回 true
+ */
+function tokensHaveKeyword(tokens: string[], keyword: string): boolean {
+  const parts = keyword.split(/\s+/).filter((part) => part.length > 0)
+  if (parts.length === 0) return false
+  for (let start = 0; start + parts.length <= tokens.length; start += 1) {
+    let matched = true
+    for (let offset = 0; offset < parts.length; offset += 1) {
+      if (!tokenMatchesKeywordPart(tokens[start + offset], parts[offset])) {
+        matched = false
+        break
+      }
+    }
+    if (matched) return true
+  }
+  return false
+}
+
+/**
+ * 删除语义识别（卡 4 起，卡 3 接入 tokenizer）：判断一条 bash 命令是否在删除受保护工具。
+ *
+ * 卡 3 起不再用 `command.includes(keyword)`，而是先用 collectSegments() 做引号感知的
+ * 词法切分 / 包装器解包 / bash -c 递归，再在 token 层面匹配。规则（卡 6 起）来自配置的
+ * protectedRemovalPatterns：一条规则是一组 { keywords: [...] }，命令「同时命中该规则的
+ * 全部关键词」即命中；命中任一规则就返回 true。默认规则（DEFAULT_CONFIG）：
  *   1. 'dsh plugin' + 'remove' + 'dsh-fortress'
  *   2. 'dsh plugin' + 'remove' + 'dsh-plugin-host-template'
  *   3. 'dsh plugin' + 'remove' + 'dsh-plugin-client-template'
@@ -259,8 +383,10 @@ function resolveRulesOrder(ctx: Context): number {
  */
 // 导出供 tests/e2e.test.ts 直接驱动；运行时行为不变
 export function isProtectedRemoval(command: string): boolean {
+  // 跨段压平后匹配：关键词可以跨 && || ; | 出现，与旧的整串 includes 语义一致。
+  const tokens = collectSegments(command, 0).flat()
   return CONFIG.protectedRemovalPatterns.some((pattern) =>
-    pattern.keywords.every((keyword) => command.includes(keyword)),
+    pattern.keywords.every((keyword) => tokensHaveKeyword(tokens, keyword)),
   )
 }
 
@@ -381,16 +507,21 @@ function operandPath(token: string): string {
 }
 
 /**
- * bash 命令级判断（卡 5 简化版）：命令里是否在对受保护路径做写 / 删 / 移动。
+ * bash 命令级判断（卡 5 起，卡 3 接入 tokenizer）：命令里是否在对受保护路径做写 / 删 / 移动。
  *
- * 依旧是字符串级判断、不做完整 shell 解析（tokenizer 是后面的卡），规则：
- *   1. 先按 && || ; | 换行 切段逐段看，没出现 rm / mv / cp 的段直接跳过；
- *   2. cp：只有「目标是受保护路径」才拦——cp 受保护路径 → 别处 是读取语义，
+ * 卡 3 起不再手写 split，改用 collectSegments()：
+ *   1. 先按引号感知地切成段（引号内的 && ; | 不算分隔符），并解开
+ *      sudo / command / nohup / env FOO=bar 包装器、递归展开 bash -c；
+ *   2. 每个展开后的段里，第一个 token 是动词，不是 rm / mv / cp 的段直接跳过；
+ *   3. cp：只有「目标是受保护路径」才拦——cp 受保护路径 → 别处 是读取语义，
  *      放行。目标取动词之后最后一个非选项操作数；
- *   3. rm / mv：该段里任一操作数落在受保护路径内就拦——rm 是删除，mv 无论
+ *   4. rm / mv：该段里任一操作数落在受保护路径内就拦——rm 是删除，mv 无论
  *      朝哪个方向都会改动受保护那一侧。
  *
+ * 引号内的 rm（如 `echo "rm /path"`）被 tokenizer 收成一个整体 token，不再被当成动词。
  * 只认绝对路径 token（以斜杠开头），相对路径的相对基准解析留给后面的卡。
+ *
+ * 守卫体内不抛错：tokenizer 抛错时 collectSegments() 返回空列表，直接放行。
  *
  * @param command bash 工具的原始命令字符串
  * @param pathsOverride 可选的受保护路径清单（测试注入用）；省略时用 CONFIG.protectedPaths
@@ -401,16 +532,15 @@ export function isProtectedPathModification(
   command: string,
   pathsOverride?: string[],
 ): boolean {
-  const segments = command.split(/&&|\|\||[;|\n]/)
+  const segments = collectSegments(command, 0)
 
-  for (const segment of segments) {
-    const tokens = segment.split(/\s+/).filter((token) => token.length > 0)
-    const verbIndex = tokens.findIndex((token) => MUTATING_VERBS.includes(verbName(token)))
-    if (verbIndex === -1) continue
+  for (const tokens of segments) {
+    const verb = verbName(tokens[0])
+    if (!MUTATING_VERBS.includes(verb)) continue
 
-    const operands = tokens.slice(verbIndex + 1)
+    const operands = tokens.slice(1)
 
-    if (verbName(tokens[verbIndex]) === 'cp') {
+    if (verb === 'cp') {
       // 目标 = 最后一个非选项操作数；只看它，源是受保护路径属于读取语义。
       for (let i = operands.length - 1; i >= 0; i -= 1) {
         const candidate = operandPath(operands[i])

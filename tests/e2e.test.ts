@@ -488,6 +488,83 @@ check('36', 'getProtectedPathPrefixes() 归一化后能匹配 /Users/liuzhaoyang
 })
 
 // ===========================================================================
+// 37-46 卡 3：tokenizer 接入（引号感知 / 包装器解包 / bash -c 递归）
+// ===========================================================================
+
+group('37-46 卡 3：tokenizer 接入')
+
+// 37-44 / 46：路径保护判定（isProtectedPathModification + 真实 guard 双路验证）
+const tokenizerPathCases: Array<{ id: string; command: string; blocked: boolean; label: string }> = [
+  { id: '37', command: 'echo "rm /path"', blocked: false, label: '引号内 rm 不算动词 -> 放行' },
+  {
+    id: '38',
+    command: `sudo rm -rf ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'sudo 包装器解包 -> 拦',
+  },
+  {
+    id: '39',
+    command: `env FOO=bar rm -rf ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'env VAR=value 包装器解包 -> 拦',
+  },
+  {
+    id: '40',
+    command: `command rm -rf ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'command 包装器解包 -> 拦',
+  },
+  {
+    id: '41',
+    command: `bash -c 'rm -rf ${DEV_DIR}/foo'`,
+    blocked: true,
+    label: 'bash -c 递归解析 -> 拦',
+  },
+  {
+    id: '42',
+    command: `bash -c 'echo "rm /path"'`,
+    blocked: false,
+    label: 'bash -c 内层引号内 rm -> 放行',
+  },
+  {
+    id: '43',
+    command: `nohup rm ${DEV_DIR}/foo`,
+    blocked: true,
+    label: 'nohup 包装器解包 -> 拦',
+  },
+  { id: '44', command: `echo 'a && b'`, blocked: false, label: '引号内分隔符不切段 -> 放行' },
+  {
+    id: '46',
+    command: `bash -c 'bash -c "rm ${DEV_DIR}/foo"'`,
+    blocked: true,
+    label: 'bash -c 两层嵌套 -> 拦',
+  },
+]
+
+for (const item of tokenizerPathCases) {
+  check(item.id, `${item.label}（${JSON.stringify(item.command)}）`, () => {
+    assert.equal(
+      mod.isProtectedPathModification(item.command),
+      item.blocked,
+      `isProtectedPathModification 期望 ${item.blocked}`,
+    )
+    const result = askGuard(bashExec(item.command))
+    if (item.blocked) {
+      assert.equal(result, 'blocked: protected path modification')
+    } else {
+      assert.equal(result, undefined, `guard 应放行，实际返回 ${JSON.stringify(result)}`)
+    }
+  })
+}
+
+// 45：包装器 + 删除语义（走 isProtectedRemoval 分支）
+check('45', `sudo dsh plugin --profile web remove dsh-fortress -> 拦（包装器 + 删除）`, () => {
+  assert.equal(mod.isProtectedRemoval('sudo dsh plugin --profile web remove dsh-fortress'), true)
+  const result = askGuard(bashExec('sudo dsh plugin --profile web remove dsh-fortress'))
+  assert.equal(result, 'blocked: protected tool removal')
+})
+
+// ===========================================================================
 // 收尾
 // ===========================================================================
 
