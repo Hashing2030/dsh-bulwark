@@ -878,6 +878,19 @@ function apply(ctx) {
 				if (isProtectedPathModification(command, void 0, typeof workspace === "string" ? workspace : void 0)) return "blocked: protected path modification";
 			}
 		}
+		if (exec?.name === "plugin_manager") {
+			const pmArgs = exec?.arguments;
+			if (pmArgs !== null && typeof pmArgs === "object") {
+				const action = pmArgs.action;
+				const target = pmArgs.target;
+				const enabled = pmArgs.enabled;
+				if (typeof action === "string" && typeof target === "string") {
+					const touchesProtected = target.includes("dsh-bulwark") || target.includes("dsh-fortress");
+					if (action === "remove_bundle" && touchesProtected) return "blocked: protected tool removal";
+					if ((action === "set_bundle" || action === "set_plugin") && touchesProtected && enabled === false) return "blocked: protected tool removal";
+				}
+			}
+		}
 		if (exec?.name === "write" || exec?.name === "edit" || exec?.name === "str_replace_editor") {
 			const args = exec?.arguments;
 			if (args !== null && typeof args === "object") {

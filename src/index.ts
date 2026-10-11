@@ -945,6 +945,43 @@ export function apply(ctx: Context): void {
           }
         }
 
+        // 卡 2：plugin_manager 守卫分支（纵深防御）。DSH 原生的 plugin_manager
+        // 工具可以直接移除 / 禁用插件，不走 bash，因此上面那套 bash 文本匹配拦不住它。
+        // 只拦真正会削弱本插件的破坏性 / 禁用动作：
+        //   - remove_bundle（移除 bundle）
+        //   - set_bundle / set_plugin + enabled === false（禁用）
+        // 刻意不拦 install_bundle：那是安装动作，不是删除；target 若恰好含旧名
+        // dsh-fortress 且指向别人的包会误伤，故放行。
+        // 全部字段做类型收窄：exec.arguments 不是对象、action / target 不是字符串、
+        // enabled 不是严格布尔 false 时都不命中，逻辑走完原样放行，绝不抛错。
+        if (exec?.name === 'plugin_manager') {
+          const pmArgs = exec?.arguments
+          if (pmArgs !== null && typeof pmArgs === 'object') {
+            const action = (pmArgs as Record<string, unknown>).action
+            const target = (pmArgs as Record<string, unknown>).target
+            const enabled = (pmArgs as Record<string, unknown>).enabled
+
+            if (typeof action === 'string' && typeof target === 'string') {
+              // 宽松匹配 target：可能带版本号、scope、路径，精确相等容易漏。
+              const touchesProtected =
+                target.includes('dsh-bulwark') || target.includes('dsh-fortress')
+
+              if (action === 'remove_bundle' && touchesProtected) {
+                return 'blocked: protected tool removal'
+              }
+
+              // enabled 只认严格布尔 false：'false' 这类字符串保守放行。
+              if (
+                (action === 'set_bundle' || action === 'set_plugin') &&
+                touchesProtected &&
+                enabled === false
+              ) {
+                return 'blocked: protected tool removal'
+              }
+            }
+          }
+        }
+
         // 卡 5：文件类工具的目标路径判断。只列写类工具，
         // read / grep / glob 这些只读工具刻意不进来。
         if (

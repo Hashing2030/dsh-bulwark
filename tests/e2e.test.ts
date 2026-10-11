@@ -785,6 +785,84 @@ for (const item of relativePathCases) {
 }
 
 // ===========================================================================
+// 72-79 卡 2：plugin_manager 守卫分支（纵深防御）
+// ===========================================================================
+
+group('72-79 卡 2：plugin_manager 守卫分支')
+
+/** 构造真实的 plugin_manager exec 形状：{ name, arguments } */
+function pluginManagerExec(args: unknown): GuardExec {
+  return { name: 'plugin_manager', arguments: args }
+}
+
+const PLUGIN_MANAGER_CASES: Array<{
+  id: string
+  label: string
+  args: unknown
+  blocked: boolean
+}> = [
+  {
+    id: '72',
+    label: 'remove_bundle target=dsh-bulwark -> 拦',
+    args: { action: 'remove_bundle', target: 'dsh-bulwark' },
+    blocked: true,
+  },
+  {
+    id: '73',
+    label: 'remove_bundle target=dsh-fortress（旧名兼容）-> 拦',
+    args: { action: 'remove_bundle', target: 'dsh-fortress' },
+    blocked: true,
+  },
+  {
+    id: '74',
+    label: 'remove_bundle target=some-other-plugin -> 放行',
+    args: { action: 'remove_bundle', target: 'some-other-plugin' },
+    blocked: false,
+  },
+  {
+    id: '75',
+    label: 'set_bundle target=dsh-bulwark enabled=false -> 拦',
+    args: { action: 'set_bundle', target: 'dsh-bulwark', enabled: false },
+    blocked: true,
+  },
+  {
+    id: '76',
+    label: 'set_bundle target=dsh-bulwark enabled=true（重新启用）-> 放行',
+    args: { action: 'set_bundle', target: 'dsh-bulwark', enabled: true },
+    blocked: false,
+  },
+  {
+    id: '77',
+    label: 'set_plugin target=dsh-bulwark enabled=false -> 拦',
+    args: { action: 'set_plugin', target: 'dsh-bulwark', enabled: false },
+    blocked: true,
+  },
+  {
+    id: '78',
+    label: 'list_bundles（只读动作）-> 放行',
+    args: { action: 'list_bundles' },
+    blocked: false,
+  },
+]
+
+for (const item of PLUGIN_MANAGER_CASES) {
+  check(item.id, item.label, () => {
+    const result = askGuard(pluginManagerExec(item.args))
+    if (item.blocked) {
+      assert.equal(result, 'blocked: protected tool removal')
+    } else {
+      assert.equal(result, undefined, `guard 应放行，实际返回 ${JSON.stringify(result)}`)
+    }
+  })
+}
+
+// 79：畸形输入（exec.arguments 是 undefined）走完判断逻辑、放行且不抛错。
+check('79', 'exec.arguments 是 undefined -> 放行不抛错', () => {
+  const result = askGuard({ name: 'plugin_manager' })
+  assert.equal(result, undefined, `guard 应放行，实际返回 ${JSON.stringify(result)}`)
+})
+
+// ===========================================================================
 // 收尾
 // ===========================================================================
 
